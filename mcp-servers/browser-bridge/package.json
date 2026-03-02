@@ -6,13 +6,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test-new-tools.js && node --test test-context-manager.js && node --test test-handlers.js",
+    "test": "node test-new-tools.js && node --test test-context-manager.js && node --test test-handlers.js && node --test test-automate-perplexity.js",
+    "test:perplexity": "node --test test-automate-perplexity.js",
     "test:new": "node test-new-tools.js",
     "test:context": "node --test test-context-manager.js",
     "test:handlers": "node --test test-handlers.js",
     "test:reliability": "node --test test-reliability.js",
     "test:integration": "node test-standalone.js",
-    "test:all": "node test-standalone.js && node test-new-tools.js && node --test test-context-manager.js && node --test test-handlers.js && node --test test-reliability.js"
+    "test:all": "node test-standalone.js && node test-new-tools.js && node --test test-context-manager.js && node --test test-handlers.js && node --test test-automate-perplexity.js && node --test test-reliability.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

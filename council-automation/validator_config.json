@@ -1,0 +1,23 @@
+{
+  "min_response_length": 50,
+  "max_response_length": 50000,
+  "max_todo_count": 3,
+  "max_code_lines": 500,
+  "destructive_patterns": [
+    "rm\\s+-rf",
+    "DROP\\s+TABLE",
+    "DROP\\s+DATABASE",
+    "git\\s+push\\s+--force",
+    "git\\s+reset\\s+--hard",
+    "format\\s+[A-Z]:",
+    "del\\s+/[sS]\\s+/[qQ]",
+    "Remove-Item.*-Recurse.*-Force"
+  ],
+  "confidence_phrases": [
+    "I'm not sure",
+    "I don't have access",
+    "I cannot",
+    "I'm unable",
+    "I don't know"
+  ]
+}

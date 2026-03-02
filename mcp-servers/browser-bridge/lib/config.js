@@ -35,6 +35,7 @@ export const CONFIG = {
     councilBrowser: 210_000,   // council_query --mode browser
     councilResearch: 540_000,  // research_query (9 min — Perplexity can take up to 7 min)
     councilLabs: 900_000,      // labs_query (15 min)
+    perplexityAuto: 600_000,   // automate_perplexity_task (10 min max)
   },
 
   // Relay-specific timeouts

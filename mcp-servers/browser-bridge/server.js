@@ -480,6 +480,22 @@ class BrowserBridgeServer {
             },
           },
         },
+        {
+          name: 'automate_perplexity_task',
+          description: 'Send a task to Perplexity AI via browser-bridge automation, wait for response, optionally validate, and return results. Single tool call handles the full flow: navigate → type → submit → wait → extract → validate → return. Uses the authenticated Chrome session — $0/query.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              task: { type: 'string', description: 'The query or task to send to Perplexity' },
+              mode: { type: 'string', enum: ['standard', 'research', 'labs'], description: "Perplexity mode. 'standard' for quick answers, 'research' for deep research, 'labs' for experimental. Default: standard." },
+              validate: { type: 'boolean', description: 'Run validation barrier on response (checks for destructive commands, syntax errors, etc.). Default: true.' },
+              maxWaitMs: { type: 'number', description: 'Maximum time to wait for response in milliseconds. Default: 300000 (5 min).' },
+              stableMs: { type: 'number', description: 'Milliseconds of no content change to consider response complete. Default: 8000.' },
+              tabId: { type: 'number', description: 'Tab ID to use. If omitted, finds existing perplexity.ai tab or navigates one.' },
+            },
+            required: ['task'],
+          },
+        },
       ],
     }));
 
@@ -952,6 +968,201 @@ class BrowserBridgeServer {
           cwd: scriptDir,
         });
         return JSON.parse(result);
+      }
+
+      case 'automate_perplexity_task': {
+        const task = Validator.text(args.task, 10_000);
+        const mode = args.mode ? Validator.action(args.mode, ['standard', 'research', 'labs']) : 'standard';
+        const shouldValidate = Validator.boolean(args.validate, true);
+        const maxWaitMs = Validator.timeout(args.maxWaitMs, 10_000, 900_000, 300_000);
+        const stableMs = Validator.timeout(args.stableMs, 2_000, 60_000, 8_000);
+        let tabId = Validator.tabId(args.tabId);
+        const automationStart = Date.now();
+
+        // Selectors (mapped from DOM discovery)
+        const SEL = {
+          input: '[role="textbox"][contenteditable="true"]',
+          submit: 'button[aria-label="Submit"]',
+          prose: '.prose',
+        };
+
+        // Step A: Find or navigate to perplexity.ai tab
+        if (!tabId) {
+          const tabsResult = await this.bridge.broadcast(
+            { type: 'get_tabs', payload: this._withSession({}) },
+            CONFIG.timeouts.quick,
+          );
+          const tabs = tabsResult.tabs || tabsResult;
+          const pplxTab = (Array.isArray(tabs) ? tabs : []).find(
+            (t) => t.url && t.url.includes('perplexity.ai') && !t.url.includes('/search/'),
+          );
+          if (pplxTab) {
+            tabId = pplxTab.id;
+            // Switch to the tab
+            await this.bridge.broadcast(
+              { type: 'switch_tab', payload: this._withSession({ tabId }) },
+              CONFIG.timeouts.quick,
+            );
+          } else {
+            // Navigate a new or existing tab to perplexity.ai
+            const navResult = await this.bridge.broadcast(
+              { type: 'navigate', payload: this._withSession({ url: 'https://www.perplexity.ai/' }) },
+              CONFIG.requestTimeout,
+            );
+            tabId = navResult.tabId || tabId;
+            // Wait for input to be ready
+            await this.bridge.broadcast(
+              {
+                type: 'action_request',
+                payload: this._withSession({ action: 'waitForElement', selector: SEL.input, timeout: 10_000, tabId }),
+              },
+              12_000,
+            );
+          }
+        }
+
+        // Step B: If mode is research or labs, type the slash command first
+        if (mode === 'research' || mode === 'labs') {
+          // Click the input to focus it
+          await this.bridge.broadcast(
+            { type: 'action_request', payload: this._withSession({ action: 'click', selector: SEL.input, tabId }) },
+            CONFIG.timeouts.quick,
+          );
+          // Type the slash command
+          const slashCmd = mode === 'research' ? '/research ' : '/labs ';
+          await this.bridge.broadcast(
+            { type: 'cdp_type', payload: this._withSession({ text: slashCmd, delay: 50, tabId }) },
+            CONFIG.timeouts.councilUi,
+          );
+          // Wait for the command palette to appear and press Enter to select
+          await new Promise((r) => setTimeout(r, 1500));
+          await this.bridge.broadcast(
+            { type: 'action_request', payload: this._withSession({ action: 'pressKey', key: 'Enter', tabId }) },
+            CONFIG.timeouts.quick,
+          );
+          await new Promise((r) => setTimeout(r, 500));
+        }
+
+        // Step C: Click input and type the task
+        await this.bridge.broadcast(
+          { type: 'action_request', payload: this._withSession({ action: 'click', selector: SEL.input, tabId }) },
+          CONFIG.timeouts.quick,
+        );
+        const typingTimeout = Math.max(CONFIG.timeouts.councilUi, task.length * 150);
+        await this.bridge.broadcast(
+          { type: 'cdp_type', payload: this._withSession({ text: task, delay: 30, tabId }) },
+          typingTimeout,
+        );
+
+        // Step D: Click Submit button
+        await new Promise((r) => setTimeout(r, 300));
+        await this.bridge.broadcast(
+          { type: 'action_request', payload: this._withSession({ action: 'click', selector: SEL.submit, tabId }) },
+          CONFIG.timeouts.quick,
+        );
+
+        // Step E: Wait for response to stabilize
+        // First, wait for the page to navigate to a thread URL and prose to appear
+        await new Promise((r) => setTimeout(r, 3000));
+        // Re-fetch tabs to find the new thread tab (page may have navigated)
+        let responseTabId = tabId;
+        try {
+          const updatedTabs = await this.bridge.broadcast(
+            { type: 'get_tabs', payload: this._withSession({}) },
+            CONFIG.timeouts.quick,
+          );
+          const allTabs = updatedTabs.tabs || updatedTabs;
+          const threadTab = (Array.isArray(allTabs) ? allTabs : []).find(
+            (t) => t.url && t.url.includes('perplexity.ai/search/'),
+          );
+          if (threadTab) responseTabId = threadTab.id;
+        } catch { /* Use original tabId */ }
+
+        // Wait for prose to stabilize
+        const waitResult = await this.bridge.broadcast(
+          {
+            type: 'action_request',
+            payload: this._withSession({
+              action: 'waitForStable',
+              selector: SEL.prose,
+              stableMs,
+              timeout: maxWaitMs,
+              pollInterval: 2000,
+              tabId: responseTabId,
+            }),
+          },
+          maxWaitMs + 5000,
+        );
+
+        // Step F: Extract response text
+        const extractResult = await this.bridge.broadcast(
+          {
+            type: 'evaluate',
+            payload: this._withSession({
+              expression: `(() => {
+                const prose = document.querySelector('.prose');
+                return {
+                  text: prose ? prose.textContent : '',
+                  html: prose ? prose.innerHTML.substring(0, 50000) : '',
+                  url: window.location.href
+                };
+              })()`,
+              tabId: responseTabId,
+            }),
+          },
+          CONFIG.timeouts.heavy,
+        );
+
+        const responseText = extractResult?.result?.text || '';
+        const responseUrl = extractResult?.result?.url || '';
+        const elapsed = Date.now() - automationStart;
+
+        // Step G: Optionally validate
+        let validated = false;
+        let violations = [];
+        let sanitizedResponse = responseText;
+
+        if (shouldValidate && responseText.length > 0) {
+          try {
+            const scriptDir = join(homedir(), '.claude', 'council-automation');
+            const pythonEnv = { ...process.env, PYTHONIOENCODING: 'utf-8' };
+            const validatorInput = JSON.stringify({ response: responseText, task });
+            const validatorOutput = await execFileAsync('python', [
+              join(scriptDir, 'response_validator.py'),
+              '--json', validatorInput,
+            ], {
+              timeout: CONFIG.timeouts.councilExec,
+              encoding: 'utf-8',
+              env: pythonEnv,
+              cwd: scriptDir,
+            });
+            const validatorResult = JSON.parse(validatorOutput);
+            validated = validatorResult.valid;
+            violations = validatorResult.violations || [];
+            sanitizedResponse = validatorResult.sanitized_response || responseText;
+          } catch (valErr) {
+            log.warn('validator_failed', { error: valErr.message });
+            // Non-fatal — return unvalidated response
+            validated = false;
+            violations = [{ rule: 'validator_error', severity: 'warn', message: valErr.message }];
+          }
+        } else if (responseText.length === 0) {
+          validated = false;
+          violations = [{ rule: 'empty_response', severity: 'block', message: 'Perplexity returned empty response' }];
+        } else {
+          validated = true; // Validation skipped
+        }
+
+        // Step H: Return results
+        return {
+          response: sanitizedResponse,
+          validated,
+          violations,
+          mode,
+          url: responseUrl,
+          elapsed_ms: elapsed,
+          timedOut: waitResult?.timedOut || false,
+        };
       }
 
       default:

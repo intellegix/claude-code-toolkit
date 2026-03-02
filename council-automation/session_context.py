@@ -78,6 +78,28 @@ def read_truncated(path: Path, max_lines: int = 50) -> str:
         return ""
 
 
+def read_key_files(
+    project_dir: Path,
+    file_list: list[str],
+    max_files: int = 5,
+    max_chars: int = 2000,
+) -> str:
+    """Read first max_chars of each key file for context."""
+    parts: list[str] = []
+    for filename in file_list[:max_files]:
+        filepath = project_dir / filename
+        if not filepath.exists() or not filepath.is_file():
+            continue
+        try:
+            if filepath.stat().st_size > 50_000:
+                continue
+            content = filepath.read_text(encoding="utf-8", errors="replace")[:max_chars]
+            parts.append(f"### {filename}\n```\n{content}\n```")
+        except OSError:
+            continue
+    return "\n\n".join(parts)
+
+
 def extract_claude_md_overview(project_dir: Path) -> str:
     claude_md = project_dir / "CLAUDE.md"
     if not claude_md.exists():
@@ -118,6 +140,8 @@ def main() -> None:
     memory_dir = Path.home() / ".claude" / "projects" / hash_name / "memory"
     memory_text = read_truncated(memory_dir / "MEMORY.md", max_lines=50)
 
+    key_file_contents = read_key_files(project_dir, recent_files) if recent_files else "(none)"
+
     output = f"""# Session Context: {project_name}
 
 ## Recent Git History
@@ -132,6 +156,9 @@ def main() -> None:
 
 ## Recently Modified Files
 {chr(10).join(f"- {f}" for f in recent_files) if recent_files else "(none)"}
+
+## Key File Contents (recently modified)
+{key_file_contents}
 
 ## Project Overview (CLAUDE.md)
 {claude_overview or "(no CLAUDE.md found)"}
