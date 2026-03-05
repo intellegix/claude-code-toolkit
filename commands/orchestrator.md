@@ -98,7 +98,34 @@ Display: "Orchestrator mode ACTIVE. I will hand all implementation to a single a
 
 ### Step 2: Gather Project Context (allowed files only)
 
-Read these files from the target project:
+**Pre-check: Ensure git repo exists.**
+1. Check if `.git/` exists in target directory
+2. If NOT a git repo:
+   - Run `git init` in the target directory
+   - **Generate `.gitignore` if missing** (before staging anything):
+     1. If `.gitignore` already exists → skip generation
+     2. If no `.gitignore` → detect project type from top-level files and generate:
+        - `package.json` → add `node_modules/`, `dist/`, `.next/`, `coverage/`
+        - `pyproject.toml` / `requirements.txt` / `setup.py` → add `__pycache__/`, `*.pyc`, `.venv/`, `venv/`, `*.egg-info/`, `.mypy_cache/`
+        - `Cargo.toml` → add `target/`, `Cargo.lock` (if library)
+        - `go.mod` → add `vendor/` (optional)
+        - `build.gradle` / `pom.xml` → add `build/`, `.gradle/`, `target/`
+        - `*.csproj` / `*.sln` → add `bin/`, `obj/`, `.vs/`, `packages/`
+        - `pubspec.yaml` → add `.dart_tool/`, `build/`, `.packages`
+        - `Gemfile` → add `vendor/bundle/`, `.bundle/`
+        - `composer.json` → add `vendor/`
+        - `mix.exs` → add `_build/`, `deps/`, `.elixir_ls/`
+        - `Makefile` / `CMakeLists.txt` → add `build/`, `*.o`, `*.so`, `*.a`
+        - **Always include** (universal patterns): `.env`, `.env.*`, `!.env.example`, `.DS_Store`, `Thumbs.db`, `*.log`, `.idea/`, `.vscode/`, `*.swp`, `*.swo`
+     3. Write the generated `.gitignore` and commit it:
+        ```bash
+        git add .gitignore && git commit -m "chore: add .gitignore"
+        ```
+   - Run `git add -A && git commit -m "Initial commit"` (so the loop has a baseline — .gitignore ensures secrets/artifacts are excluded)
+   - Report: "No git repo found — initialized git with .gitignore and initial commit."
+3. If already a git repo, continue normally.
+
+Read these files from the target project (note which are missing — Step 2.5 handles it):
 - `CLAUDE.md` — current roadmap and instructions
 - `BLUEPRINT.md` — if it exists, architectural blueprint
 - `README.md` — project overview
@@ -109,6 +136,110 @@ Run in the target project directory:
 - `git diff --stat` — uncommitted changes
 
 **DO NOT read source code files.** If you need to understand the codebase, read CLAUDE.md and README.md — they should describe the architecture. If they don't, that's what you'll fix.
+
+### Step 2.5: Scaffold Missing Files (conditional)
+
+**Run this step if CLAUDE.md or BLUEPRINT.md is missing OR empty/corrupt in the target project.** If both exist AND contain required content, skip entirely to Step 3.
+
+**Content validation** (a file that exists but fails these checks is treated as missing):
+- **CLAUDE.md**: must contain at least one of `## Current Task` or `## Completion Gate` (minimum sections for loop_driver to function)
+- **BLUEPRINT.md**: must contain at least one of `## Architecture` or `## Key Components`
+- A file that is 0 bytes or lacks these sections → treat as missing, run scaffold for that file
+
+#### Empty Directory Fast-Path
+
+Before running auto-detection, check if the directory is effectively empty:
+- If the directory contains no files beyond `.git/`, `.gitignore`, and any files scaffolded in Step 2 → skip auto-detection entirely and go straight to **Interactive Gap-Filling** with a note: "Empty project directory — all project details needed from user."
+
+#### Auto-Detection (read-only, no source code)
+
+Gather project signals from metadata files and directory structure:
+
+1. **Project name**: `basename` of target directory
+2. **Git status**: `git rev-list --count HEAD 2>/dev/null` — commit count (0 = brand new)
+3. **Tech stack** — detect from presence of:
+   - `package.json` → read `name`, `dependencies`, `devDependencies` → infer Node/React/Next/etc.
+   - `pyproject.toml` / `requirements.txt` / `setup.py` → Python + framework detection
+   - `Cargo.toml` → Rust
+   - `go.mod` → Go
+   - `build.gradle` / `pom.xml` → Java/Kotlin
+   - `Makefile` / `CMakeLists.txt` → C/C++
+   - `*.csproj` / `*.sln` → .NET (C#/F#)
+   - `pubspec.yaml` → Flutter/Dart
+   - `Gemfile` → Ruby
+   - `composer.json` → PHP
+   - `mix.exs` → Elixir
+   - File extensions: `git ls-files 2>/dev/null | grep -E '\.(py|ts|js|tsx|jsx|go|rs|c|cpp|cs|dart|rb|php|swift|ex|exs)$' | head -20` — count by extension to determine primary language
+4. **Test framework**: detect `pytest.ini`, `jest.config.*`, `vitest.config.*`, `tests/`, `__tests__/`
+5. **CI/CD**: detect `.github/workflows/`, `.gitlab-ci.yml`, `.circleci/config.yml`, `.travis.yml`, `azure-pipelines.yml`, `Dockerfile`, `docker-compose.yml`, `render.yaml`, `vercel.json`
+6. **README**: read `README.md` if exists for project description
+7. **Directory layout**: `ls` top-level to understand structure
+
+#### Interactive Gap-Filling
+
+After auto-detection, ask the user via `AskUserQuestion` for anything that couldn't be detected:
+- **Always ask**: Task description (what should the loop implement?) — unless already provided as `$ARGUMENTS`
+- **Ask if missing**: Primary language/framework (if ambiguous from detection), database choice, key external APIs
+
+#### Generate CLAUDE.md (if missing)
+
+Use this **lean orchestrator-optimized template** — NOT a bloated boilerplate file. Fill in detected values, leave `[PLACEHOLDER]` for unknowns:
+
+```markdown
+# [PROJECT_NAME]
+
+## Project Overview
+- **Type**: [detected or user-provided — e.g., REST API, CLI tool, web app]
+- **Stack**: [detected — e.g., Python/FastAPI, Node/Next.js]
+- **Status**: [Scaffold | Early Dev | Feature Complete | Production]
+
+## Commands
+[auto-detected build/test/run commands from package.json scripts or pyproject.toml, or placeholder]
+
+## Current Task
+
+### Phase 1: [First task phase from user's description] — TODO
+[Description and acceptance criteria derived from user input]
+
+### Phase 2: [Second task phase] — TODO
+[Description and acceptance criteria]
+
+[Add more phases as needed based on task complexity]
+
+## Completion Gate
+- [ ] Phase 1 complete
+- [ ] Phase 2 complete
+- [ ] All tests pass
+```
+
+#### Generate BLUEPRINT.md (if missing)
+
+Only create BLUEPRINT.md for **Scaffold** and **Early Development** tier projects. Skip for Feature Complete and Production Ready projects (they don't need architectural scaffolding).
+
+```markdown
+# BLUEPRINT — [PROJECT_NAME]
+
+## Architecture
+[Auto-detected structure from directory layout, or placeholder if empty project]
+
+## Key Components
+- [Detected modules/directories from ls output]
+
+## Data Flow
+TODO — describe how data moves through the system
+
+## Technical Decisions
+TODO — document key architectural choices
+```
+
+#### Commit Scaffolded Files
+
+After generating, commit the new files:
+```bash
+git add CLAUDE.md BLUEPRINT.md && git commit -m "scaffold: add CLAUDE.md and BLUEPRINT.md for orchestrator"
+```
+
+Report: "Scaffolded [CLAUDE.md / BLUEPRINT.md / both] from auto-detected project context. Proceeding to maturity assessment."
 
 ### Step 3: Assess Project Maturity
 
@@ -121,6 +252,10 @@ Before writing instructions, classify the project to tailor your approach. Run t
 - Check presence: `tests/` or `test/` directory, `.github/workflows/` or CI config, deployment config (Dockerfile, render.yaml, vercel.json), `.env.example`
 
 **Check for manual override:** If the target project's CLAUDE.md contains `<!-- MATURITY_OVERRIDE: <tier> -->`, use that tier and skip classification. Report: "Using manual override: **<tier>**"
+
+**Handle fresh/scaffolded projects first:**
+- ≤2 commits + only scaffold/config files tracked (CLAUDE.md, BLUEPRINT.md, .gitignore, README.md — no source code files) → **Scaffold** tier (automatic). Skip the classification table below.
+- ≤2 commits + source code files present (user pointed at non-git dir with code, just initialized in Step 2) → count tracked files and classify using the table below as normal.
 
 **Classify into one of 4 tiers:**
 
