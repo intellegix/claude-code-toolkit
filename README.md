@@ -5,12 +5,13 @@
 [![Node.js 18+](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
 [![Tests: 220](https://img.shields.io/badge/Tests-220-brightgreen.svg)](automated-loop/tests/)
 
-A modular configuration system for Claude Code CLI. Includes an automated loop driver, custom slash commands, multi-model council automation, MCP browser bridge, and portfolio governance.
+A modular configuration system for Claude Code CLI. Includes an automated loop driver, multi-agent parallel orchestration via git worktrees, custom slash commands, multi-model council automation, MCP browser bridge, and portfolio governance.
 
 ## Features
 
 - **Automated Loop Driver** - Run Claude Code in autonomous loops with session continuity, budget enforcement, stagnation detection, and model-aware scaling (Sonnet recommended — near Opus quality at lower cost)
-- **Custom Slash Commands** - 15+ reusable commands for research, planning, code review, and deployment workflows
+- **Multi-Agent Parallel Orchestration** - Split large projects across 2-4 parallel agents using git worktrees with territory-based conflict prevention, shared header management, and sequential merge
+- **Custom Slash Commands** - 16+ reusable commands for research, planning, code review, and deployment workflows
 - **Council Automation** - Multi-model queries via Perplexity (GPT, Claude, Gemini) with Opus synthesis
 - **MCP Browser Bridge** - Chrome extension bridge for browser automation through Claude Code
 - **Portfolio Governance** - Project tier system with phase restrictions and complexity budgets
@@ -36,12 +37,24 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 │   ├── loop_driver.ps1        # PowerShell wrapper
 │   └── tests/                 # 220 pytest tests
 │
+├── agents/                    # Agent definitions (Task tool subagent types)
+│   ├── orchestrator.md        # Single-loop orchestrator agent
+│   ├── orchestrator-multi.md  # Multi-agent parallel orchestrator agent
+│   ├── architect.md           # System design specialist
+│   ├── backend.md             # API development agent
+│   ├── frontend.md            # UI development agent
+│   ├── database.md            # Database specialist agent
+│   ├── devops.md              # CI/CD and infrastructure agent
+│   ├── testing.md             # Test development agent
+│   └── research.md            # Research specialist agent
+│
 ├── hooks/                     # PreToolUse / session hooks
 │   ├── inject-time.py         # Time sync injection
-│   └── orchestrator-guard.py  # Orchestrator mode path guard
+│   └── orchestrator-guard.py  # Orchestrator mode path guard (supports multi-agent worktrees)
 │
 ├── commands/                  # Custom slash commands
-│   ├── orchestrator.md        # Multi-agent orchestration
+│   ├── orchestrator.md        # Single-loop task orchestration
+│   ├── orchestrator-multi.md  # Multi-agent parallel orchestration (git worktrees)
 │   ├── research-perplexity.md # Deep research via Perplexity
 │   ├── smart-plan.md          # Multi-phase project planning
 │   ├── council-refine.md      # Multi-model plan refinement
@@ -84,29 +97,43 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Claude Code CLI                         │
-│                  (claude -p --stream-json)                 │
-├──────────────┬────────────────────────┬───────────────────┤
-│              │                        │                   │
-│   ┌──────────▼──────────┐   ┌────────▼────────┐         │
-│   │   Loop Driver        │   │  Slash Commands  │         │
-│   │   (loop_driver.py)   │   │  (commands/*.md)  │        │
-│   │                      │   └────────┬────────┘         │
-│   │  ┌──────────────┐   │            │                   │
-│   │  │ NDJSON Parser │   │   ┌────────▼────────┐         │
-│   │  └──────┬───────┘   │   │ Council Automation│        │
-│   │         │            │   │ (Playwright →     │        │
-│   │  ┌──────▼───────┐   │   │  Perplexity)      │        │
-│   │  │ State Tracker │   │   └─────────────────┘         │
-│   │  │ + Budget      │   │                               │
-│   │  └──────┬───────┘   │   ┌─────────────────┐         │
-│   │         │            │   │ MCP Browser Bridge│        │
-│   │  ┌──────▼───────┐   │   │ (WebSocket ↔      │        │
-│   │  │Research Bridge│   │   │  Chrome Extension)│        │
-│   │  └──────────────┘   │   └─────────────────┘         │
-│   └──────────────────────┘                               │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        Claude Code CLI                           │
+│                    (claude -p --stream-json)                      │
+├──────────────┬────────────────────────┬──────────────────────────┤
+│              │                        │                          │
+│   ┌──────────▼──────────┐   ┌────────▼────────┐                │
+│   │   Loop Driver        │   │  Slash Commands  │                │
+│   │   (loop_driver.py)   │   │  (commands/*.md)  │               │
+│   │                      │   └────────┬────────┘                │
+│   │  ┌──────────────┐   │            │                          │
+│   │  │ NDJSON Parser │   │   ┌────────▼────────┐                │
+│   │  └──────┬───────┘   │   │ Council Automation│               │
+│   │         │            │   │ (Playwright →     │               │
+│   │  ┌──────▼───────┐   │   │  Perplexity)      │               │
+│   │  │ State Tracker │   │   └─────────────────┘                │
+│   │  │ + Budget      │   │                                      │
+│   │  └──────┬───────┘   │   ┌─────────────────┐                │
+│   │         │            │   │ MCP Browser Bridge│               │
+│   │  ┌──────▼───────┐   │   │ (WebSocket ↔      │               │
+│   │  │Research Bridge│   │   │  Chrome Extension)│               │
+│   │  └──────────────┘   │   └─────────────────┘                │
+│   └──────────────────────┘                                      │
+│                                                                  │
+│   ┌──────────────────────────────────────────────┐              │
+│   │         Multi-Agent Orchestrator              │              │
+│   │         (/orchestrator-multi)                 │              │
+│   │                                               │              │
+│   │  ┌──────────┐  ┌──────────┐  ┌──────────┐   │              │
+│   │  │ Worktree  │  │ Worktree  │  │ Worktree  │  │              │
+│   │  │ Agent 1   │  │ Agent 2   │  │ Agent N   │  │              │
+│   │  │ (loop 1)  │  │ (loop 2)  │  │ (loop N)  │  │              │
+│   │  └─────┬────┘  └─────┬────┘  └─────┬────┘   │              │
+│   │        └──────┬───────┴──────┬──────┘        │              │
+│   │               ▼              ▼                │              │
+│   │        Sequential Merge → Base Branch         │              │
+│   └──────────────────────────────────────────────┘              │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -325,6 +352,100 @@ When managing multiple projects, use `/orchestrator` to enforce role separation.
 
 The hook is fail-open: if the sentinel is missing, expired, or malformed, all operations are allowed. Normal (non-orchestrator) sessions have zero overhead — the hook exits immediately when no sentinel is found.
 
+### Multi-Agent Parallel Orchestration
+
+For large multi-phase projects, use `/orchestrator-multi` to split work across 2-4 parallel Claude Code agents. Each agent runs in an isolated **git worktree** with a scoped CLAUDE.md that restricts which files it can modify.
+
+#### Why Git Worktrees
+
+| Approach | Disk Usage | Merge Complexity | Build Independence |
+|----------|-----------|------------------|--------------------|
+| Separate clones | ~1GB each | Need fetch + merge | Full independence |
+| Subdirectories | Shared | Complex pathing | Build tools break |
+| **Git worktrees** | **~150MB each** | **Instant (shared .git)** | **Full independence** |
+
+Worktrees share the same `.git` directory, so commits from one agent are instantly visible to `git log` from any other worktree. Merging is a simple `git merge --no-ff` from the main repo.
+
+#### Usage
+
+```bash
+# Split a project across 2 agents
+/orchestrator-multi C:\Projects\my-app "Implement phases 4-13 of the feature roadmap"
+
+# Specify number of agents
+/orchestrator-multi C:\Projects\my-app "Build the API and frontend" --agents 3
+```
+
+#### How It Works
+
+```
+1. PLANNING    Analyze project, split into territories, propose plan
+                |
+2. SETUP       Create git worktrees at space-free paths
+               Link build tools via NTFS junctions
+               Write per-agent CLAUDE.md with FORBIDDEN/ALLOWED file lists
+               Verify each worktree builds independently
+                |
+3. LAUNCH      Start N parallel loop_driver.py processes (background)
+                |
+4. MONITOR     Watch git log + state.json for each agent
+               Handle shared header requests via cherry-pick
+                |
+5. MERGE       Sequential --no-ff merge (Agent 1 first, then Agent 2, etc.)
+               Resolve append-only conflicts
+               Verify combined build
+                |
+6. CLEANUP     Remove worktrees, delete agent branches, report results
+```
+
+#### Territory-Based Conflict Prevention
+
+Each agent's CLAUDE.md contains strict file ownership rules:
+
+```markdown
+### FORBIDDEN FILES -- DO NOT MODIFY
+- include/types.h          -- shared header, orchestrator-managed
+- src/shared/config.ts     -- shared module
+- Any file starting with T09*, T10*  -- Agent 2's territory
+
+### ALLOWED FILES -- Only modify these
+- src/features/auth/       -- ONLY files in assigned territory
+- tests/auth/              -- ONLY test files for assigned features
+- package.json             -- ADD dependencies only, never remove
+```
+
+If an agent needs a change to a shared file, it documents the request in `.workflow/shared-header-requests.md`. The orchestrator applies the change on the main branch and cherry-picks it into all agent branches.
+
+#### Worktree Path Requirements
+
+**Worktree paths must have NO SPACES** — GNU Make, many build tools, and path-handling utilities break on spaces.
+
+```bash
+# Good
+C:\worktrees\agent-1
+
+# Bad (will break builds)
+C:\Users\Name\My Projects\agent-1
+```
+
+If the main repo is on Dropbox or OneDrive, worktrees must go outside the synced folder.
+
+#### Configuration
+
+Multi-agent settings in `.workflow/config.json`:
+
+```json
+{
+  "multi_agent": {
+    "max_agents": 4,
+    "worktree_base": "C:\\worktrees",
+    "model": "sonnet",
+    "max_iterations_per_agent": 50,
+    "max_cost_per_agent": 25.0
+  }
+}
+```
+
 ### Custom Slash Commands
 
 Place in `~/.claude/commands/` and invoke from Claude Code with `/<command-name>`.
@@ -341,7 +462,8 @@ Place in `~/.claude/commands/` and invoke from Claude Code with `/<command-name>
 | `/handoff` | Agent-to-agent handoff documentation |
 | `/portfolio-status` | Portfolio-wide project status review |
 | `/cache-perplexity-session` | Refresh Perplexity browser session cookies |
-| `/orchestrator` | Multi-agent task orchestration with role enforcement |
+| `/orchestrator` | Single-loop task orchestration with role enforcement |
+| `/orchestrator-multi` | Multi-agent parallel orchestration using git worktrees |
 
 #### Authoring Custom Commands
 

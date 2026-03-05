@@ -37,6 +37,8 @@
 !rules/**
 !handoffs/
 !handoffs/**
+!hooks/
+!hooks/**
 
 # Exclude generated/runtime files within tracked dirs
 council-automation/__pycache__/
