@@ -382,7 +382,7 @@ cat C:\worktrees\agent-2\.workflow\state.json
 | Agent timeout (loop_driver exits) | Check iteration count. If work remains, relaunch with fresh prompt. |
 | Budget exceeded | Report cost, ask user to increase or stop |
 | Agent modifying forbidden files | Should not happen (CLAUDE.md prohibits it). If it does, `git checkout -- <file>` to revert. |
-| Shared header request | Read `.workflow/shared-header-requests.md`, apply change to main branch, cherry-pick into agent branches. |
+| Shared header request | Run **Phase D.5 Auto-Resolution Loop** — auto-apply blocking requests, copy to worktrees, update status. See Phase D.5 for full procedure. |
 
 ### Handling Shared Header Requests
 
@@ -397,6 +397,75 @@ If an agent documents a need in `.workflow/shared-header-requests.md`:
    cd C:\worktrees\agent-2 && git cherry-pick <sha>
    ```
 5. Agents will pick up the new definitions on their next iteration
+
+---
+
+## Phase D.5: AUTO-RESOLVE SHARED HEADER REQUESTS
+
+**Runs during Phase D monitoring.** After each monitoring check, scan for pending shared header requests and auto-apply them. This prevents agents from being blocked waiting for orchestrator intervention.
+
+### Auto-Resolution Loop
+
+After each monitoring check in Phase D, execute these steps:
+
+1. **Scan for requests:**
+   For each agent worktree, check if `.workflow/shared-header-requests.md` exists and has content.
+   Look for sections under `## Pending Requests` with structured content:
+   - `### Request: <NAME>` headings
+   - `**Type:** flag | variable | constant | trainer`
+   - `**File:** <path>` (target header file)
+   - `**Urgency:** blocking | nice-to-have`
+   - `**Definition:** <code>` (the actual define/constant to add)
+
+2. **Filter actionable requests:**
+   - Only process requests marked `blocking`
+   - Skip requests already in `## Completed Requests`
+   - Skip requests that reference cross-agent dependencies (flag for manual review)
+
+3. **Apply each request on main branch:**
+   ```bash
+   cd <project-root>
+   # For flag requests: append to target header (e.g., firered_story.h)
+   # For trainer constants: append to trainers.h with next available ID
+   # For variable requests: append to target header
+   git add <modified-files>
+   git commit -m "feat(shared): auto-apply <request-name> from Agent N"
+   ```
+
+4. **Propagate to all worktrees:**
+   ```bash
+   # Copy the modified shared files directly (safer than cherry-pick mid-flight)
+   for each agent worktree:
+     cp <project-root>/<shared-file> <worktree>/<shared-file>
+   ```
+   Direct file copy is preferred over `git cherry-pick` because:
+   - No risk of merge conflicts with uncommitted agent work
+   - No git history complications with stash/pop
+   - Agents pick up the new definitions on their next build
+
+5. **Update request status:**
+   In the requesting agent's `.workflow/shared-header-requests.md`, move the request from
+   `## Pending Requests` to `## Completed Requests` with timestamp and commit SHA.
+
+### Safety Rules
+
+- Never auto-resolve requests of type `cross-agent` — flag for orchestrator review
+- Never auto-resolve requests that modify files outside the declared shared header list
+- Always verify the target file exists before modifying
+- If a request conflicts with existing definitions (duplicate IDs, overlapping ranges), flag for manual review
+- Log all auto-resolutions to `.workflow/auto-resolve-log.md` on main branch
+- When allocating new trainer IDs, always use `LAST_TRAINER_INDEX + 1` as the starting point and update `LAST_TRAINER_INDEX`
+
+### Monitoring Integration
+
+Add these signals to the Phase D decision gates:
+
+| Signal | Action |
+|--------|--------|
+| New pending shared header request (blocking) | Auto-resolve: apply change on main branch, copy to all worktrees, update request status |
+| New pending shared header request (nice-to-have) | Queue for next monitoring pass, batch with other requests |
+| Cross-agent dependency request | Flag for manual orchestrator review — do NOT auto-resolve |
+| Conflicting request (duplicate IDs, overlapping ranges) | Reject and document reason in request file |
 
 ---
 
