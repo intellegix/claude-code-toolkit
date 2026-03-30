@@ -2103,14 +2103,20 @@ async def main() -> None:
     )
 
     if args.save_session:
-        await council.start()
-        _log("Browser opened. Log in to Perplexity in the browser window.")
-        _log("Press Enter here when done...")
-        # Use asyncio-compatible input
-        await asyncio.get_event_loop().run_in_executor(None, input)
-        await council.save_session()
-        await council.stop()
-        _log("Session saved. You can now run queries in headless mode.")
+        semaphore = SessionSemaphore()
+        try:
+            instance_id = semaphore.acquire(SEMAPHORE_WAIT_TIMEOUT)
+            council.instance_id = instance_id
+            await council.start()
+            _log("Browser opened. Log in to Perplexity in the browser window.")
+            _log("Press Enter here when done...")
+            # Use asyncio-compatible input
+            await asyncio.get_event_loop().run_in_executor(None, input)
+            await council.save_session()
+            await council.stop()
+            _log("Session saved. You can now run queries in headless mode.")
+        finally:
+            semaphore.release()
         return
 
     if not args.query:

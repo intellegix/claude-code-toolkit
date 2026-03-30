@@ -26,11 +26,16 @@ try:
     from council_config import (
         BROWSER_LOCALSTORAGE_PATH,
         BROWSER_SESSION_PATH,
+        SEMAPHORE_WAIT_TIMEOUT,
     )
+    from council_browser import PerplexityCouncil, SessionSemaphore, BrowserBusyError
+    _HAS_COUNCIL = True
 except ImportError:
     # Fallback if run outside council-automation directory
     BROWSER_SESSION_PATH = Path.home() / ".claude" / "config" / "playwright-session.json"
     BROWSER_LOCALSTORAGE_PATH = Path.home() / ".claude" / "config" / "playwright-localstorage.json"
+    SEMAPHORE_WAIT_TIMEOUT = 60
+    _HAS_COUNCIL = False
 
 
 def _log(msg: str) -> None:
@@ -139,6 +144,16 @@ async def refresh_session(
             ],
         }]
 
+    # Acquire semaphore slot to prevent conflicts with concurrent sessions
+    semaphore = None
+    if _HAS_COUNCIL:
+        semaphore = SessionSemaphore()
+        try:
+            semaphore.acquire(SEMAPHORE_WAIT_TIMEOUT)
+        except BrowserBusyError as e:
+            _log(f"ERROR: {e}")
+            return False
+
     pw = await async_playwright().start()
     browser = None
     context = None
@@ -146,14 +161,15 @@ async def refresh_session(
 
     try:
         # --- Attempt 1: non-persistent context (fast, supports concurrency) ---
+        chrome_args = PerplexityCouncil._chrome_args(instance_id=0) if _HAS_COUNCIL else [
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
         browser = await pw.chromium.launch(
             channel="chrome",
             headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ],
+            args=chrome_args,
         )
 
         context = await browser.new_context(
@@ -180,11 +196,7 @@ async def refresh_session(
                 user_data_dir=temp_profile_dir,
                 channel="chrome",
                 headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
+                args=chrome_args,
                 viewport={"width": 1280, "height": 900},
             )
             await context.add_init_script(stealth_js)
@@ -255,6 +267,8 @@ async def refresh_session(
             except Exception:
                 pass
         await pw.stop()
+        if semaphore:
+            semaphore.release()
         if temp_profile_dir and Path(temp_profile_dir).exists():
             shutil.rmtree(temp_profile_dir, ignore_errors=True)
             _log(f"Cleaned up temp profile: {temp_profile_dir}")

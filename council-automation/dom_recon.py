@@ -18,7 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path.home() / ".claude" / "council-automation"))
 
-from council_browser import PerplexityCouncil, _log
+from council_browser import PerplexityCouncil, SessionSemaphore, BrowserBusyError, _log
+from council_config import SEMAPHORE_WAIT_TIMEOUT
 
 RECON_JS = r"""() => {
     const results = {
@@ -184,6 +185,14 @@ async def main():
     _log("Starting PerplexityCouncil (headful)...")
 
     council = PerplexityCouncil(headless=False, save_artifacts=True)
+    semaphore = SessionSemaphore()
+    try:
+        instance_id = semaphore.acquire(SEMAPHORE_WAIT_TIMEOUT)
+        council.instance_id = instance_id
+    except BrowserBusyError as e:
+        print(json.dumps({"error": str(e)}))
+        return
+
     try:
         await council.start()
 
@@ -269,6 +278,7 @@ async def main():
             await page.close()
     finally:
         await council.stop()
+        semaphore.release()
 
 
 if __name__ == "__main__":
