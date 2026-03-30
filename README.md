@@ -10,7 +10,7 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 ## Features
 
 - **Automated Loop Driver** - Run Claude Code in autonomous loops with session continuity, budget enforcement, stagnation detection, and model-aware scaling (Sonnet recommended — near Opus quality at lower cost)
-- **Custom Slash Commands** - 30 reusable commands for research, planning, code review, testing, and deployment workflows
+- **Custom Slash Commands** - 31 reusable commands for research, planning, code review, testing, and deployment workflows
 - **Orchestrator Suite** - Three orchestrator commands for greenfield bootstrapping (`/orchestrator-new`), single-loop execution (`/orchestrator`), and multi-agent parallel work (`/orchestrator-multi`)
 - **Frontend E2E Testing** - 7-tier browser-based testing with visual/UX quality checks via MCP Browser Bridge
 - **Council Automation** - Multi-model queries via Perplexity (GPT, Claude, Gemini) with Opus synthesis
@@ -53,7 +53,7 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 │   ├── inject-time.py         # Time sync injection
 │   └── orchestrator-guard.py  # Orchestrator mode path guard (supports multi-agent worktrees)
 │
-├── commands/                  # Custom slash commands (30 total)
+├── commands/                  # Custom slash commands (31 total)
 │   ├── orchestrator-new.md    # Greenfield project bootstrapper
 │   ├── orchestrator.md        # Single-loop task execution
 │   ├── orchestrator-multi.md  # Multi-agent parallel orchestration
@@ -68,6 +68,7 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 │   ├── review.md              # Code review
 │   ├── handoff.md             # Agent handoff
 │   ├── init.md                # Project bootstrap & health check
+│   ├── solve-perplexity.md    # Iterative problem solver via Perplexity
 │   ├── stub-check.md          # Implementation completeness audit
 │   ├── spreadsheet-audit.md   # Excel spreadsheet audit
 │   ├── gba-build.md           # GBA game builder
@@ -407,6 +408,7 @@ Place in `~/.claude/commands/` and invoke from Claude Code with `/<command-name>
 | `/council-refine` | Multi-model plan refinement with Opus synthesis |
 | `/council-extract` | Extract council response to markdown |
 | `/creative-research` | 3-stage creative feature discovery |
+| `/solve-perplexity` | Iterative problem solver (Tier 2.5 escalation) |
 | `/labs-perplexity` | Labs query via Perplexity |
 | `/automate-perplexity` | Unified Perplexity automation |
 | `/cache-perplexity-session` | Refresh Perplexity session cookies |
