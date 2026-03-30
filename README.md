@@ -3,9 +3,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![Node.js 18+](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
-[![Tests: 289](https://img.shields.io/badge/Tests-289-brightgreen.svg)](automated-loop/tests/)
+[![Tests: 377](https://img.shields.io/badge/Tests-377-brightgreen.svg)](automated-loop/tests/)
 
-A modular configuration system for Claude Code CLI. Includes an automated loop driver, custom slash commands, multi-model council automation, MCP browser bridge, and portfolio governance.
+A modular configuration system for Claude Code CLI. Includes an automated loop driver, multi-agent parallel orchestration via git worktrees, custom slash commands, multi-model council automation, MCP browser bridge, and portfolio governance.
 
 ## Features
 
@@ -36,11 +36,22 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 │   ├── state_tracker.py       # Workflow state persistence + budget
 │   ├── log_redactor.py        # API key scrubbing from logs
 │   ├── loop_driver.ps1        # PowerShell wrapper
-│   └── tests/                 # 289 pytest tests
+│   └── tests/                 # 377 pytest tests
+│
+├── agents/                    # Agent definitions (Task tool subagent types)
+│   ├── orchestrator.md        # Single-loop orchestrator agent
+│   ├── orchestrator-multi.md  # Multi-agent parallel orchestrator agent
+│   ├── architect.md           # System design specialist
+│   ├── backend.md             # API development agent
+│   ├── frontend.md            # UI development agent
+│   ├── database.md            # Database specialist agent
+│   ├── devops.md              # CI/CD and infrastructure agent
+│   ├── testing.md             # Test development agent
+│   └── research.md            # Research specialist agent
 │
 ├── hooks/                     # PreToolUse / session hooks
 │   ├── inject-time.py         # Time sync injection
-│   └── orchestrator-guard.py  # Orchestrator mode path guard
+│   └── orchestrator-guard.py  # Orchestrator mode path guard (supports multi-agent worktrees)
 │
 ├── commands/                  # Custom slash commands (30 total)
 │   ├── orchestrator-new.md    # Greenfield project bootstrapper
