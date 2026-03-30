@@ -3,15 +3,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
 [![Node.js 18+](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
-[![Tests: 377](https://img.shields.io/badge/Tests-377-brightgreen.svg)](automated-loop/tests/)
+[![Tests: 289](https://img.shields.io/badge/Tests-289-brightgreen.svg)](automated-loop/tests/)
 
-A modular configuration system for Claude Code CLI. Includes an automated loop driver, multi-agent parallel orchestration via git worktrees, custom slash commands, multi-model council automation, MCP browser bridge, and portfolio governance.
+A modular configuration system for Claude Code CLI. Includes an automated loop driver, custom slash commands, multi-model council automation, MCP browser bridge, and portfolio governance.
 
 ## Features
 
 - **Automated Loop Driver** - Run Claude Code in autonomous loops with session continuity, budget enforcement, stagnation detection, and model-aware scaling (Sonnet recommended — near Opus quality at lower cost)
-- **Multi-Agent Parallel Orchestration** - Split large projects across 2-4 parallel agents using git worktrees with territory-based conflict prevention, shared header management, and sequential merge
-- **Custom Slash Commands** - 18 reusable commands for research, planning, code review, and deployment workflows
+- **Custom Slash Commands** - 30 reusable commands for research, planning, code review, testing, and deployment workflows
+- **Orchestrator Suite** - Three orchestrator commands for greenfield bootstrapping (`/orchestrator-new`), single-loop execution (`/orchestrator`), and multi-agent parallel work (`/orchestrator-multi`)
+- **Frontend E2E Testing** - 7-tier browser-based testing with visual/UX quality checks via MCP Browser Bridge
 - **Council Automation** - Multi-model queries via Perplexity (GPT, Claude, Gemini) with Opus synthesis
 - **MCP Browser Bridge** - Chrome extension bridge for browser automation through Claude Code
 - **Portfolio Governance** - Project tier system with phase restrictions and complexity budgets
@@ -35,39 +36,40 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 │   ├── state_tracker.py       # Workflow state persistence + budget
 │   ├── log_redactor.py        # API key scrubbing from logs
 │   ├── loop_driver.ps1        # PowerShell wrapper
-│   └── tests/                 # 377 pytest tests
-│
-├── agents/                    # Agent definitions (Task tool subagent types)
-│   ├── orchestrator.md        # Single-loop orchestrator agent
-│   ├── orchestrator-multi.md  # Multi-agent parallel orchestrator agent
-│   ├── architect.md           # System design specialist
-│   ├── backend.md             # API development agent
-│   ├── frontend.md            # UI development agent
-│   ├── database.md            # Database specialist agent
-│   ├── devops.md              # CI/CD and infrastructure agent
-│   ├── testing.md             # Test development agent
-│   └── research.md            # Research specialist agent
+│   └── tests/                 # 289 pytest tests
 │
 ├── hooks/                     # PreToolUse / session hooks
 │   ├── inject-time.py         # Time sync injection
-│   └── orchestrator-guard.py  # Orchestrator mode path guard (supports multi-agent worktrees)
+│   └── orchestrator-guard.py  # Orchestrator mode path guard
 │
-├── commands/                  # Custom slash commands
-│   ├── orchestrator.md        # Single-loop task orchestration
-│   ├── orchestrator-multi.md  # Multi-agent parallel orchestration (git worktrees)
+├── commands/                  # Custom slash commands (30 total)
+│   ├── orchestrator-new.md    # Greenfield project bootstrapper
+│   ├── orchestrator.md        # Single-loop task execution
+│   ├── orchestrator-multi.md  # Multi-agent parallel orchestration
 │   ├── research-perplexity.md # Deep research via Perplexity
-│   ├── labs-perplexity.md     # Experimental labs via Perplexity
-│   ├── creative-research.md   # 3-stage creative feature discovery
+│   ├── frontend-e2e.md        # Frontend E2E with visual/UX testing
 │   ├── smart-plan.md          # Multi-phase project planning
 │   ├── council-refine.md      # Multi-model plan refinement
-│   ├── council-extract.md     # Extract council response to markdown
 │   ├── export-to-council.md   # Export session for council review
-│   ├── automate-perplexity.md # Unified Perplexity automation
+│   ├── creative-research.md   # 3-stage creative feature discovery
 │   ├── fix-issue.md           # GitHub issue resolution
 │   ├── implement.md           # Feature implementation
 │   ├── review.md              # Code review
 │   ├── handoff.md             # Agent handoff
-│   └── ...                    # 18 commands total
+│   ├── init.md                # Project bootstrap & health check
+│   ├── stub-check.md          # Implementation completeness audit
+│   ├── spreadsheet-audit.md   # Excel spreadsheet audit
+│   ├── gba-build.md           # GBA game builder
+│   ├── gba-build-develop.md   # Self-driving GBA development pipeline
+│   ├── gba-test.md            # GBA integration test runner
+│   ├── gba-smoke.md           # GBA emulator smoke test
+│   ├── gba-ai-full.md         # GBA AI behavior regression test
+│   ├── nds-build.md           # NDS game builder
+│   ├── nds-test.md            # NDS emulator test runner
+│   ├── profiles/              # Game profile configs
+│   │   ├── brain-attic.md
+│   │   └── pokemon-embergold.md
+│   └── ...                    # + 8 more (research, council, perplexity commands)
 │
 ├── council-automation/        # Multi-model council system
 │   ├── council_browser.py     # Playwright-based Perplexity automation
@@ -101,43 +103,29 @@ A modular configuration system for Claude Code CLI. Includes an automated loop d
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Claude Code CLI                           │
-│                    (claude -p --stream-json)                      │
-├──────────────┬────────────────────────┬──────────────────────────┤
-│              │                        │                          │
-│   ┌──────────▼──────────┐   ┌────────▼────────┐                │
-│   │   Loop Driver        │   │  Slash Commands  │                │
-│   │   (loop_driver.py)   │   │  (commands/*.md)  │               │
-│   │                      │   └────────┬────────┘                │
-│   │  ┌──────────────┐   │            │                          │
-│   │  │ NDJSON Parser │   │   ┌────────▼────────┐                │
-│   │  └──────┬───────┘   │   │ Council Automation│               │
-│   │         │            │   │ (Playwright →     │               │
-│   │  ┌──────▼───────┐   │   │  Perplexity)      │               │
-│   │  │ State Tracker │   │   └─────────────────┘                │
-│   │  │ + Budget      │   │                                      │
-│   │  └──────┬───────┘   │   ┌─────────────────┐                │
-│   │         │            │   │ MCP Browser Bridge│               │
-│   │  ┌──────▼───────┐   │   │ (WebSocket ↔      │               │
-│   │  │Research Bridge│   │   │  Chrome Extension)│               │
-│   │  └──────────────┘   │   └─────────────────┘                │
-│   └──────────────────────┘                                      │
-│                                                                  │
-│   ┌──────────────────────────────────────────────┐              │
-│   │         Multi-Agent Orchestrator              │              │
-│   │         (/orchestrator-multi)                 │              │
-│   │                                               │              │
-│   │  ┌──────────┐  ┌──────────┐  ┌──────────┐   │              │
-│   │  │ Worktree  │  │ Worktree  │  │ Worktree  │  │              │
-│   │  │ Agent 1   │  │ Agent 2   │  │ Agent N   │  │              │
-│   │  │ (loop 1)  │  │ (loop 2)  │  │ (loop N)  │  │              │
-│   │  └─────┬────┘  └─────┬────┘  └─────┬────┘   │              │
-│   │        └──────┬───────┴──────┬──────┘        │              │
-│   │               ▼              ▼                │              │
-│   │        Sequential Merge → Base Branch         │              │
-│   └──────────────────────────────────────────────┘              │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                    Claude Code CLI                         │
+│                  (claude -p --stream-json)                 │
+├──────────────┬────────────────────────┬───────────────────┤
+│              │                        │                   │
+│   ┌──────────▼──────────┐   ┌────────▼────────┐         │
+│   │   Loop Driver        │   │  Slash Commands  │         │
+│   │   (loop_driver.py)   │   │  (commands/*.md)  │        │
+│   │                      │   └────────┬────────┘         │
+│   │  ┌──────────────┐   │            │                   │
+│   │  │ NDJSON Parser │   │   ┌────────▼────────┐         │
+│   │  └──────┬───────┘   │   │ Council Automation│        │
+│   │         │            │   │ (Playwright →     │        │
+│   │  ┌──────▼───────┐   │   │  Perplexity)      │        │
+│   │  │ State Tracker │   │   └─────────────────┘         │
+│   │  │ + Budget      │   │                               │
+│   │  └──────┬───────┘   │   ┌─────────────────┐         │
+│   │         │            │   │ MCP Browser Bridge│        │
+│   │  ┌──────▼───────┐   │   │ (WebSocket ↔      │        │
+│   │  │Research Bridge│   │   │  Chrome Extension)│        │
+│   │  └──────────────┘   │   └─────────────────┘         │
+│   └──────────────────────┘                               │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -301,12 +289,11 @@ The loop never modifies `CLAUDE.md` itself — the human retains full editorial 
 
 **Concurrent Perplexity Research Queries**
 
-Concurrent research queries work reliably, thanks to a multi-layer isolation approach:
+Concurrent research queries now work in most cases, thanks to a 3-layer fix:
 
-- **Playwright-managed cleanup** (`council_browser.py`): Browser lifecycle is handled entirely by Playwright's built-in process management (`context.close()` → `playwright.stop()`). No manual PID tracking — previous PID-delta tracking was removed because it caused a cross-session kill bug where one session could force-kill another's Chrome processes.
+- **Process cleanup** (`council_browser.py`): Snapshots Chrome PIDs before/after browser launch. After `playwright.stop()`, any surviving `chrome.exe` processes are force-killed after a 1-second grace period, preventing orphaned instances from blocking subsequent queries.
 - **Profile isolation**: Each browser session gets a unique temp user-data-dir (`tempfile.mkdtemp(prefix="council_np_")`), eliminating Chrome `SingletonLock` conflicts. Node.js subprocess calls use `execFileAsync` for non-blocking concurrent execution.
 - **DevTools protocol coordination**: `/research-perplexity`, `/labs-perplexity`, and `/export-to-council` commands include a mandatory "Close Browser Bridge Sessions" step before launching Playwright, preventing DevTools Protocol collisions between browser-bridge and Playwright.
-- **Empty result diagnostics**: The MCP server captures stderr from Python subprocesses and retries once (after 3s) if stdout is empty, with diagnostic logging for debugging.
 
 The `SessionSemaphore` limits concurrency to 3 browser slots. Very high concurrency (4+ simultaneous queries) may still hit Perplexity's own session limits when using the same account.
 
@@ -319,29 +306,44 @@ Failed research queries automatically retry up to **3 times** with exponential b
 
 Transient Perplexity/Cloudflare issues are handled automatically — the loop continues even if research fails.
 
-### Orchestrator Mode
+### Orchestrator Suite
 
-When managing multiple projects, use `/orchestrator` to enforce role separation. The orchestrator writes CLAUDE.md instructions and launches loops — it never touches source code directly.
+Three commands for managing projects at different scales. All three enforce role separation — the orchestrator writes CLAUDE.md instructions and launches loops, never touching source code directly.
+
+| Command | Use Case |
+|---------|----------|
+| `/orchestrator-new` | Greenfield projects — idea → Perplexity research (2 passes) → BLUEPRINT.md → routes to single or multi |
+| `/orchestrator` | Single-loop execution — task → research → CLAUDE.md → `loop_driver.py` |
+| `/orchestrator-multi` | Multi-agent parallel — task → Appropriateness Gate → research → git worktrees → parallel agents |
 
 #### Usage
 
 ```bash
-# Activate for a project with a task
+# Greenfield: bootstrap a new project from an idea
+/orchestrator-new Build a CLI tool that converts CSV to JSON with streaming support
+
+# Single-loop: execute a task against an existing project
 /orchestrator C:\Projects\my-app Add user authentication
 
-# Check current status
-/orchestrator status
+# Multi-agent: parallelize work across git worktrees
+/orchestrator-multi C:\Projects\my-app Refactor auth, add tests, update docs
 
-# Deactivate
+# Status / deactivate
+/orchestrator status
 /orchestrator off
 ```
+
+#### Research Integration
+
+All three orchestrators run `/research-perplexity` before writing agent instructions, providing research-informed CLAUDE.md files. `/orchestrator-new` runs two research passes: one for technology landscape and one for architecture decisions.
 
 #### How It Works
 
 1. **Sentinel file**: Activation creates `.workflow/orchestrator-mode.json` in the target project (24-hour expiration for crash recovery)
 2. **PreToolUse hook**: `~/.claude/hooks/orchestrator-guard.py` fires on every Read/Edit/Write/Grep/Glob/Bash call. If a sentinel is active, it blocks access to source code files while allowing CLAUDE.md, BLUEPRINT.md, markdown, and `.workflow/` files
-3. **4-phase workflow**: PLANNING (gather context, write CLAUDE.md) → LAUNCHING (start loop_driver.py) → MONITORING (10-min checks) → REPORTING (summarize results)
+3. **Workflow phases**: PLANNING (gather context, write CLAUDE.md) → LAUNCHING (start loop_driver.py) → MONITORING (10-min checks) → REPORTING (summarize results)
 4. **Persistent mode**: Stays active until `/orchestrator off` — supports multiple sequential tasks without reactivation
+5. **Handoff protocol**: Uses `## Project Genesis` marker in CLAUDE.md, BLUEPRINT.md for architecture, and a 3-file handoff package for agent transitions
 
 #### Sentinel File Format
 
@@ -357,123 +359,80 @@ When managing multiple projects, use `/orchestrator` to enforce role separation.
 
 The hook is fail-open: if the sentinel is missing, expired, or malformed, all operations are allowed. Normal (non-orchestrator) sessions have zero overhead — the hook exits immediately when no sentinel is found.
 
-### Multi-Agent Parallel Orchestration
+### Frontend E2E Testing
 
-For large multi-phase projects, use `/orchestrator-multi` to split work across 2-4 parallel Claude Code agents. Each agent runs in an isolated **git worktree** with a scoped CLAUDE.md that restricts which files it can modify.
+The `/frontend-e2e` command runs comprehensive browser-based end-to-end tests using the MCP Browser Bridge. Tests are organized into 7 tiers:
 
-#### Why Git Worktrees
+| Tier | Focus |
+|------|-------|
+| T1 Universal | Page loads, content renders, no console errors |
+| T1.5 Accessibility | ARIA labels, focus management, color contrast |
+| T1.7 Visual/UX | Layout consistency, visual hierarchy, spacing |
+| T2 Navigation | Links, routing, back/forward behavior |
+| T3 Responsive | Mobile, tablet, desktop breakpoints |
+| T4 Interactive | Forms, buttons, dynamic content, state management |
+| T5 Performance | Load times, resource sizes, paint metrics |
 
-| Approach | Disk Usage | Merge Complexity | Build Independence |
-|----------|-----------|------------------|--------------------|
-| Separate clones | ~1GB each | Need fetch + merge | Full independence |
-| Subdirectories | Shared | Complex pathing | Build tools break |
-| **Git worktrees** | **~150MB each** | **Instant (shared .git)** | **Full independence** |
-
-Worktrees share the same `.git` directory, so commits from one agent are instantly visible to `git log` from any other worktree. Merging is a simple `git merge --no-ff` from the main repo.
-
-#### Usage
-
-```bash
-# Split a project across 2 agents
-/orchestrator-multi C:\Projects\my-app "Implement phases 4-13 of the feature roadmap"
-
-# Specify number of agents
-/orchestrator-multi C:\Projects\my-app "Build the API and frontend" --agents 3
-```
-
-#### How It Works
-
-```
-1. PLANNING    Analyze project, split into territories, propose plan
-                |
-2. SETUP       Create git worktrees at space-free paths
-               Link build tools via NTFS junctions
-               Write per-agent CLAUDE.md with FORBIDDEN/ALLOWED file lists
-               Verify each worktree builds independently
-                |
-3. LAUNCH      Start N parallel loop_driver.py processes (background)
-                |
-4. MONITOR     Watch git log + state.json for each agent
-               Handle shared header requests via cherry-pick
-                |
-5. MERGE       Sequential --no-ff merge (Agent 1 first, then Agent 2, etc.)
-               Resolve append-only conflicts
-               Verify combined build
-                |
-6. CLEANUP     Remove worktrees, delete agent branches, report results
-```
-
-#### Territory-Based Conflict Prevention
-
-Each agent's CLAUDE.md contains strict file ownership rules:
-
-```markdown
-### FORBIDDEN FILES -- DO NOT MODIFY
-- include/types.h          -- shared header, orchestrator-managed
-- src/shared/config.ts     -- shared module
-- Any file starting with T09*, T10*  -- Agent 2's territory
-
-### ALLOWED FILES -- Only modify these
-- src/features/auth/       -- ONLY files in assigned territory
-- tests/auth/              -- ONLY test files for assigned features
-- package.json             -- ADD dependencies only, never remove
-```
-
-If an agent needs a change to a shared file, it documents the request in `.workflow/shared-header-requests.md`. The orchestrator applies the change on the main branch and cherry-picks it into all agent branches.
-
-#### Worktree Path Requirements
-
-**Worktree paths must have NO SPACES** — GNU Make, many build tools, and path-handling utilities break on spaces.
-
-```bash
-# Good
-C:\worktrees\agent-1
-
-# Bad (will break builds)
-C:\Users\Name\My Projects\agent-1
-```
-
-If the main repo is on Dropbox or OneDrive, worktrees must go outside the synced folder.
-
-#### Configuration
-
-Multi-agent settings in `.workflow/config.json`:
-
-```json
-{
-  "multi_agent": {
-    "max_agents": 4,
-    "worktree_base": "C:\\worktrees",
-    "model": "sonnet",
-    "max_iterations_per_agent": 50,
-    "max_cost_per_agent": 25.0
-  }
-}
-```
+Each tier produces a pass/fail report with screenshots for failures. Run against any frontend project with `localhost` or a deployed URL.
 
 ### Custom Slash Commands
 
 Place in `~/.claude/commands/` and invoke from Claude Code with `/<command-name>`.
 
+**Orchestrator Suite**
+
 | Command | Description |
 |---------|-------------|
-| `/research-perplexity` | Deep research via Perplexity browser automation |
-| `/labs-perplexity` | Experimental labs query via Perplexity |
-| `/creative-research` | 3-stage creative feature discovery (ideation → viability → blueprints) |
-| `/smart-plan` | Multi-phase project planning |
+| `/orchestrator-new` | Greenfield project bootstrapper with Perplexity research |
+| `/orchestrator` | Single-loop task execution with research-informed CLAUDE.md |
+| `/orchestrator-multi` | Multi-agent parallel orchestration via git worktrees |
+
+**Research & Council**
+
+| Command | Description |
+|---------|-------------|
+| `/research-perplexity` | Deep research via Perplexity (mandatory context preamble) |
+| `/export-to-council` | Multi-model council analysis |
 | `/council-refine` | Multi-model plan refinement with Opus synthesis |
-| `/council-extract` | Extract model council response to markdown |
-| `/export-to-council` | Export session context for council review |
-| `/automate-perplexity` | Unified Perplexity automation (standard/research/labs) |
-| `/fix-issue` | GitHub issue investigation and resolution |
-| `/implement` | Feature implementation workflow |
-| `/review` | Code review workflow |
-| `/handoff` | Agent-to-agent handoff documentation |
-| `/portfolio-status` | Portfolio-wide project status review |
-| `/ensure-space` | Add current Perplexity thread to a project Space |
-| `/cache-perplexity-session` | Refresh Perplexity browser session cookies |
-| `/orchestrator` | Single-loop task orchestration with role enforcement |
-| `/orchestrator-multi` | Multi-agent parallel orchestration using git worktrees |
+| `/council-extract` | Extract council response to markdown |
+| `/creative-research` | 3-stage creative feature discovery |
+| `/labs-perplexity` | Labs query via Perplexity |
+| `/automate-perplexity` | Unified Perplexity automation |
+| `/cache-perplexity-session` | Refresh Perplexity session cookies |
+| `/ensure-space` | Add Perplexity thread to project space |
+
+**Development Workflow**
+
+| Command | Description |
+|---------|-------------|
+| `/smart-plan` | Multi-phase project planning |
+| `/implement` | Feature implementation |
+| `/fix-issue` | GitHub issue resolution |
+| `/review` | Code review |
+| `/init` | Project bootstrap & health check |
+| `/stub-check` | Implementation completeness audit |
+| `/handoff` | Agent handoff documentation |
+| `/portfolio-status` | Portfolio-wide status review |
+| `/spreadsheet-audit` | Excel spreadsheet audit |
+
+**Testing**
+
+| Command | Description |
+|---------|-------------|
+| `/frontend-e2e` | Frontend E2E with visual/UX quality checks |
+| `/gba-build` | GBA game builder |
+| `/gba-build-develop` | Self-driving GBA development pipeline |
+| `/gba-test` | GBA integration test runner |
+| `/gba-smoke` | GBA emulator smoke test |
+| `/gba-ai-full` | GBA AI behavior regression test |
+| `/nds-build` | NDS game builder |
+| `/nds-test` | NDS emulator test runner |
+
+**Legacy**
+
+| Command | Description |
+|---------|-------------|
+| `/research` | Deep research (legacy) |
 
 #### Authoring Custom Commands
 
