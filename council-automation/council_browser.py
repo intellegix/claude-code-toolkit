@@ -159,16 +159,18 @@ class SessionSemaphore:
             self._cleanup_stale()
             for slot in range(self.max_sessions):
                 slot_file = self.sessions_dir / f"slot-{slot}.lock"
-                if not slot_file.exists():
-                    try:
-                        slot_file.write_text(
-                            f"{pid} {time.time():.0f}\n", encoding="utf-8"
-                        )
-                        self._session_file = slot_file
-                        self.instance_id = slot
-                        return slot
-                    except OSError:
-                        continue  # Another process claimed it first
+                try:
+                    # Atomic create — O_CREAT|O_EXCL fails if file already exists
+                    fd = os.open(
+                        str(slot_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                    )
+                    os.write(fd, f"{pid} {time.time():.0f}\n".encode("utf-8"))
+                    os.close(fd)
+                    self._session_file = slot_file
+                    self.instance_id = slot
+                    return slot
+                except OSError:
+                    continue  # Slot already claimed by another process
 
             elapsed = time.time() - start
             if elapsed >= wait_timeout:
