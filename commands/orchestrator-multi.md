@@ -22,6 +22,46 @@
 
 ---
 
+## Appropriateness Gate — MANDATORY, RUNS FIRST
+
+**Before ANY other phase**, evaluate whether this task actually warrants multi-agent parallel execution. If it doesn't, invoke `/orchestrator` instead. This gate runs after argument parsing but before Phase 0.
+
+**Skip this gate** (proceed directly to Phase 0) ONLY if:
+- User explicitly passed `--agents N` with N >= 2
+- User explicitly said "multi-agent", "parallel agents", or "split across agents"
+- Arguments are `status` or `off` (subcommands, not new tasks)
+
+### Evaluation Criteria
+
+Gather quick context (< 30 seconds, no deep exploration):
+
+1. `git rev-parse --show-toplevel` — get project root
+2. `git ls-files | wc -l` — tracked file count
+3. Check for `BLUEPRINT.md` — does it have 3+ independent phases?
+4. If task description provided: does it describe work touching 2+ independent modules/directories?
+
+### Decision Matrix
+
+| Signal | Multi-Agent Appropriate | Single-Agent Appropriate |
+|--------|------------------------|--------------------------|
+| File count | 50+ tracked files | < 50 tracked files |
+| BLUEPRINT.md | 3+ phases with independent file scopes | < 3 phases, or phases share files heavily |
+| Task description | Multiple independent features/modules named | Single feature, bug fix, or tightly coupled work |
+| Directory structure | 3+ distinct top-level modules (e.g., `api/`, `frontend/`, `workers/`) | Monolithic structure, single `src/` directory |
+| Estimated scope | Multi-day effort, 100+ file changes | Single session effort, < 50 file changes |
+
+**Decision rule:** If **3 or more** signals point to "Single-Agent Appropriate", fall back to `/orchestrator`.
+
+### Fallback Action
+
+If the task is not appropriate for multi-agent:
+
+1. Report to user: "This task is better suited for single-loop execution — [1-line reason: e.g., 'single module scope with tightly coupled files']. Routing to `/orchestrator`."
+2. Invoke `/orchestrator` via the `Skill` tool, passing through the original `$ARGUMENTS` (project path + task description)
+3. **STOP** — do not continue to Phase 0 or any subsequent multi-agent phases
+
+---
+
 ## Architecture: Git Worktrees (Not Subdirectories)
 
 This orchestrator uses **git worktrees** — not `.agents/` subdirectories, not separate clones. Each agent gets a full, independent working directory that shares the same `.git` history.
@@ -43,6 +83,14 @@ This orchestrator uses **git worktrees** — not `.agents/` subdirectories, not 
 ## Phase 0: AUTO-DISCOVERY (when `$ARGUMENTS` is empty)
 
 **Skip this phase if explicit arguments were provided.** When the user runs `/orchestrator-multi` with no arguments, auto-detect project context and generate the orchestration plan.
+
+**Handoff detection**: If BLUEPRINT.md contains `## Routing Analysis` with verdict
+`MULTI_AGENT`, this project was bootstrapped by `/orchestrator-new`. In that case:
+- Skip the Appropriateness Gate (routing already decided)
+- Use Path A below (BLUEPRINT.md exists) — the phase annotations, file scopes,
+  and dependency graph are already populated for territory splitting
+- Read `docs/RESEARCH_FINDINGS.md` for strategic context
+- CLAUDE.md already has `## Project Genesis` with full context — do NOT overwrite
 
 ### Path A: BLUEPRINT.md Exists
 
@@ -220,7 +268,100 @@ cd C:\worktrees\agent-2 && <build-command>
 
 Both must succeed before launching agents.
 
+### Step 4.5: Research via /research-perplexity — MANDATORY, NO EXCEPTIONS
+
+**This step determines WHAT goes into each agent's CLAUDE.md. It is the critical
+intelligence-gathering step. NEVER skip it. NEVER write agent CLAUDE.md files without
+completing this step first.**
+
+Each agent's CLAUDE.md is its entire world — every instruction, phase, acceptance criterion,
+territory rule, and gotcha must be in there. Writing from shallow context produces vague
+instructions that cause agents to spin or violate territory boundaries.
+
+#### 4.5.1: Close Browser Bridge Sessions
+
+Call `mcp__browser-bridge__browser_close_session` to release browser-bridge tab connections,
+then wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to detach.
+
+#### 4.5.2: Build the Research Query
+
+Compile the full orchestration context into a single research query:
+
+```
+[ENVIRONMENT CONTEXT — READ FIRST]
+This project is being developed using Claude Code, Anthropic's official CLI tool for Claude
+(claude.ai/claude-code). The developer uses a Claude Max subscription and works entirely in
+the terminal via the `claude` CLI command. Claude Code is an agentic coding assistant that
+reads/writes files, runs terminal commands, searches codebases, and executes multi-step
+development tasks autonomously. All code generation, refactoring, debugging, and project
+management happens through Claude Code's conversation interface — there is no IDE or GUI
+involved. Responses should account for this workflow: recommend CLI-compatible tools,
+terminal-based solutions, and approaches that work well with an AI coding agent operating
+in a command-line environment.
+[END ENVIRONMENT CONTEXT]
+
+I am a multi-agent orchestrator preparing implementation instructions (per-agent CLAUDE.md
+files) for {N} parallel automated coding agents. Each agent will read ONLY its own CLAUDE.md
+and execute phases autonomously in an isolated git worktree. Agents have NO communication
+with each other — only through the orchestrator. I need you to help me determine the optimal
+implementation plan for each agent.
+
+## Project Context
+- **Task**: {user's task description}
+- **Tech stack**: {detected stack}
+- **File count**: {N} tracked files, {N} commits
+- **Agents**: {N} agents with the following territory split:
+  - Agent 1: {scope description} — owns {file/directory list}
+  - Agent 2: {scope description} — owns {file/directory list}
+- **Forbidden files** (shared, orchestrator-managed): {list}
+- **BLUEPRINT.md**: {content or "none"}
+
+## Directory Structure
+{ls output}
+
+## Recent Git History
+{git log --oneline -10}
+
+For EACH agent, please provide:
+1. PHASED IMPLEMENTATION PLAN: Break that agent's assigned work into ordered phases (max 6
+   per agent). Each phase: title, description, specific files to create/modify, acceptance
+   criteria, complexity (S/M/L).
+2. TERRITORY RISKS: Are there any hidden dependencies between agents' territories? Files
+   that look independent but share imports, types, or build config?
+3. CRITICAL GOTCHAS: Platform-specific issues, encoding problems, build tool quirks for
+   this tech stack.
+4. PATTERNS TO FOLLOW: Existing code patterns each agent should match.
+5. BUILD/TEST COMMANDS: Exact commands each agent must run after each phase.
+6. MERGE CONSIDERATIONS: What conflicts are likely when merging? What should each agent
+   do to minimize merge friction (e.g., append-only patterns, avoiding shared constants)?
+```
+
+#### 4.5.3: Run Research
+
+Invoke `/research-perplexity` via the `Skill` tool with the query from 4.5.2.
+
+**If `/research-perplexity` fails:**
+1. Close browser-bridge sessions (`browser_close_session`)
+2. Wait 30 seconds for cleanup
+3. Retry once
+4. If retry also fails: proceed to Step 5 using only context from Steps 1-4, but add to
+   each agent's CLAUDE.md: `<!-- WARNING: Research step failed — instructions may be incomplete -->`
+
+#### 4.5.4: Synthesize Research into Per-Agent Plans
+
+From the research results, extract per-agent:
+- Ordered phase list with concrete file paths and acceptance criteria
+- Build/test commands verified against actual tooling
+- Territory risks and merge-safety notes
+- Gotchas and warnings to embed in each CLAUDE.md
+
+Hold this synthesis in context for Step 5. Do NOT present it to the user separately.
+
 ### Step 5: Write Per-Agent CLAUDE.md
+
+**Using the research synthesis from Step 4.5**, write each agent's CLAUDE.md. The research
+output is the primary source for phase definitions, acceptance criteria, gotchas, territory
+risks, and build commands. Do NOT write agent CLAUDE.md files from shallow context alone.
 
 Each agent's CLAUDE.md MUST include:
 

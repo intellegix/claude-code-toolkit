@@ -139,6 +139,15 @@ Run in the target project directory:
 
 ### Step 2.5: Scaffold Missing Files (conditional)
 
+**Handoff detection**: If CLAUDE.md exists and contains `## Project Genesis`, this project
+was bootstrapped by `/orchestrator-new`. In that case:
+- Skip Step 2.5 entirely (scaffolding already done)
+- Step 3 (maturity): auto-classify as **Scaffold** tier
+- Step 3.5 (research): still runs, but for tactical/phase-level implementation guidance —
+  read `docs/RESEARCH_FINDINGS.md` first for strategic context already gathered
+- Step 4 (write CLAUDE.md): do NOT overwrite — append phase-specific tactical notes to the
+  existing CLAUDE.md instead of recreating it
+
 **Run this step if CLAUDE.md or BLUEPRINT.md is missing OR empty/corrupt in the target project.** If both exist AND contain required content, skip entirely to Step 3.
 
 **Content validation** (a file that exists but fails these checks is treated as missing):
@@ -273,19 +282,120 @@ Before writing instructions, classify the project to tailor your approach. Run t
 
 **Lock the tier** for this orchestrator session. Do not re-assess unless the user explicitly asks or passes `--force-reassess`.
 
+### Step 3.5: Research via /research-perplexity — MANDATORY, NO EXCEPTIONS
+
+**This step determines WHAT goes into CLAUDE.md. It is the critical intelligence-gathering
+step. NEVER skip it. NEVER write CLAUDE.md without completing this step first.**
+
+The loop agent's CLAUDE.md is its entire world — every instruction, phase, acceptance
+criterion, and gotcha must be in there. Writing it from shallow context produces vague
+instructions that cause the loop to spin. Research ensures comprehensive, precise instructions.
+
+#### 3.5.1: Close Browser Bridge Sessions
+
+Call `mcp__browser-bridge__browser_close_session` to release browser-bridge tab connections,
+then wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to detach.
+
+#### 3.5.2: Build the Research Query
+
+Compile everything gathered so far into a research query. The query MUST include:
+
+- **Project maturity tier** (from Step 3) and evidence
+- **User's task description** (from $ARGUMENTS or user input)
+- **Project metadata**: tech stack, file count, commit count, existing CLAUDE.md content
+- **BLUEPRINT.md content** (if it exists)
+- **README.md content** (if it exists)
+- **Recent git history** (`git log --oneline -10`)
+- **Directory structure** (`ls` top-level)
+
+Format the query as:
+
+```
+[ENVIRONMENT CONTEXT — READ FIRST]
+This project is being developed using Claude Code, Anthropic's official CLI tool for Claude
+(claude.ai/claude-code). The developer uses a Claude Max subscription and works entirely in
+the terminal via the `claude` CLI command. Claude Code is an agentic coding assistant that
+reads/writes files, runs terminal commands, searches codebases, and executes multi-step
+development tasks autonomously. All code generation, refactoring, debugging, and project
+management happens through Claude Code's conversation interface — there is no IDE or GUI
+involved. Responses should account for this workflow: recommend CLI-compatible tools,
+terminal-based solutions, and approaches that work well with an AI coding agent operating
+in a command-line environment.
+[END ENVIRONMENT CONTEXT]
+
+I am an orchestrator preparing implementation instructions (CLAUDE.md) for an automated
+coding agent loop. The agent will read CLAUDE.md and execute phases autonomously — it has
+no other context beyond what I write in that file. I need you to help me determine the
+optimal implementation plan.
+
+## Project Context
+- **Maturity tier**: {tier} ({evidence})
+- **Task**: {user's task description}
+- **Tech stack**: {detected stack}
+- **File count**: {N} tracked files, {N} commits
+- **Current CLAUDE.md**: {existing content or "empty/missing"}
+- **BLUEPRINT.md**: {content or "none"}
+
+## Directory Structure
+{ls output}
+
+## Recent Git History
+{git log --oneline -10}
+
+Please provide:
+1. PHASED IMPLEMENTATION PLAN: Break the task into ordered phases (max 8). Each phase must
+   have: title, description, specific files to create/modify, acceptance criteria, and
+   estimated complexity (S/M/L). Order phases by dependency — earlier phases must not depend
+   on later ones.
+2. CRITICAL GOTCHAS: Platform-specific issues, encoding problems, build tool quirks, common
+   mistakes for this tech stack that the agent should be warned about.
+3. PATTERNS TO FOLLOW: If existing code has patterns the agent should match (naming, error
+   handling, file structure), identify them.
+4. BUILD/TEST COMMANDS: Exact commands the agent must run after each phase to verify success.
+5. EDGE CASES: What the agent might miss if working from a naive understanding of the task.
+6. PHASE DEPENDENCIES: Which phases block which — can any run independently?
+```
+
+#### 3.5.3: Run Research
+
+Invoke `/research-perplexity` via the `Skill` tool with the query from 3.5.2.
+
+**If `/research-perplexity` fails:**
+1. Close browser-bridge sessions (`browser_close_session`)
+2. Wait 30 seconds for cleanup
+3. Retry once
+4. If retry also fails: proceed to Step 4 using only the context from Steps 0-3, but note
+   in CLAUDE.md: `<!-- WARNING: Research step failed — instructions may be incomplete -->`
+
+#### 3.5.4: Synthesize Research into Instruction Plan
+
+From the research results, extract:
+- Ordered phase list with concrete file paths and acceptance criteria
+- Build/test commands verified against the project's actual tooling
+- Gotchas and warnings to embed in CLAUDE.md
+- Pattern references the agent should follow
+
+Hold this synthesis in context for Step 4. Do NOT present it to the user separately —
+it flows directly into the CLAUDE.md writing step.
+
 ### Step 4: Write/Update CLAUDE.md
 
-Based on the gathered context and the user's task description:
+**Using the research synthesis from Step 3.5**, write the target project's CLAUDE.md.
+The research output is the primary source for phase definitions, acceptance criteria,
+gotchas, and build commands. Do NOT write CLAUDE.md from shallow context alone.
+
 1. Update the target project's `CLAUDE.md` with clear task instructions
 2. Structure instructions as phases with status markers (`TODO`, `IN PROGRESS`, `COMPLETE`)
-3. Include acceptance criteria for each phase
-4. **Tailor instructions to the assessed maturity tier:**
+3. Include acceptance criteria for each phase (sourced from research)
+4. Include gotchas and warnings section (sourced from research)
+5. Include exact build/test commands (sourced from research, verified against project)
+6. **Tailor instructions to the assessed maturity tier:**
    - **Scaffold**: The FIRST phase in CLAUDE.md MUST be "Expand BLUEPRINT.md with missing architectural details for the current task scope" before any implementation phases. Subsequent phases build foundational features one at a time.
    - **Early Development**: If blueprint has gaps relevant to the current task, the first phase fills those gaps. Then build the feature.
    - **Feature Complete**: Instructions focus on hardening — error handling, edge cases, test coverage, and documentation. New features are secondary.
    - **Production Ready**: Instructions target exactly what the user requested. No scaffolding, no blueprint work — the project is mature enough for direct task execution.
    - If the blueprint is a skeleton (regardless of tier), always include a blueprint expansion phase before implementation.
-5. Confirm with user: "CLAUDE.md updated with task instructions. Ready to launch loop?"
+7. Confirm with user: "CLAUDE.md updated with task instructions (informed by research). Ready to launch loop?"
 
 ---
 

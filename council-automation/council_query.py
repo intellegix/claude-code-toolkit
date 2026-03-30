@@ -8,6 +8,7 @@ Usage:
     python council_query.py --mode browser "Reliable browser query"
     python council_query.py --mode auto "Try API first, fallback to browser"
     python council_query.py --mode browser --headful "Debug with visible browser"
+    python council_query.py --mode browser --headless "Run without visible window"
     python council_query.py --mode browser --opus-synthesis "Add Opus re-synthesis"
     python council_query.py --auto-context --mode browser "Auto-inject project context"
     python council_query.py --context-file ctx.md "Analyze this"
@@ -945,6 +946,7 @@ def main() -> None:
     parser.add_argument("--read-full", action="store_true", help="Read full cached results")
     parser.add_argument("--read-model", help="Read specific model's response from cache")
     parser.add_argument("--headful", action="store_true", help="Run browser in visible mode")
+    parser.add_argument("--headless", action="store_true", help="Run browser in headless mode")
     parser.add_argument("--opus-synthesis", action="store_true", help="Run Opus re-synthesis on browser results")
     parser.add_argument("--perplexity-mode", choices=["council", "research", "labs"], default="council",
         help="Perplexity slash command to use: /council (multi-model), /research (deep research), or /labs (experimental labs)")
@@ -997,9 +999,16 @@ def main() -> None:
             print(f"WARNING: auto-context failed: {e}", file=sys.stderr)
 
     if args.mode == "browser":
+        # --headful → visible, --headless → hidden, neither → config default
+        if args.headful:
+            headful_val = True
+        elif args.headless:
+            headful_val = False  # headful=False → headless=True in run_browser_query
+        else:
+            headful_val = None
         results = asyncio.run(run_browser_query(
             args.query, context,
-            headful=True if args.headful else None,
+            headful=headful_val,
             opus_synthesis=args.opus_synthesis,
             perplexity_mode=args.perplexity_mode,
         ))

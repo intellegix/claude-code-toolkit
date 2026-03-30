@@ -4,7 +4,17 @@ Run a deep research query using Perplexity's `/research` mode via Playwright bro
 
 **No API keys required** — uses Perplexity login session only. Good fallback when council mode defaults to single-model.
 
+**CRITICAL — TWO-PASS VERIFICATION IS MANDATORY EVERY INVOCATION. After receiving Perplexity results and synthesizing a plan (Step 5), you MUST send that plan back to Perplexity for critique (Step 6) BEFORE calling ExitPlanMode. NEVER call ExitPlanMode without completing Step 6. Skipping verification is a protocol violation. This applies regardless of plan size, complexity, or apparent correctness. NO EXCEPTIONS.**
+
 **CRITICAL: Do NOT ask the user questions before completing Step 0 and Step 1. Compile context silently, build the query, and execute. Only ask questions if $ARGUMENTS is empty AND you cannot determine a useful research focus from the compiled context.**
+
+**MANDATORY CONTEXT PREAMBLE — EVERY QUERY, NO EXCEPTIONS:** Every single query sent to Perplexity (Step 2 AND Step 6.3) MUST begin with the following preamble block. This is a hard rule — never omit it, never paraphrase it, never move it to a footnote. It goes at the TOP of every query, before any other content:
+
+```
+[ENVIRONMENT CONTEXT — READ FIRST]
+This project is being developed using Claude Code, Anthropic's official CLI tool for Claude (claude.ai/claude-code). The developer uses a Claude Max subscription and works entirely in the terminal via the `claude` CLI command. Claude Code is an agentic coding assistant that reads/writes files, runs terminal commands, searches codebases, and executes multi-step development tasks autonomously. All code generation, refactoring, debugging, and project management happens through Claude Code's conversation interface — there is no IDE or GUI involved. Responses should account for this workflow: recommend CLI-compatible tools, terminal-based solutions, and approaches that work well with an AI coding agent operating in a command-line environment.
+[END ENVIRONMENT CONTEXT]
+```
 
 ## Input
 
@@ -39,9 +49,13 @@ Do NOT present findings. Do NOT ask questions. Include this context when buildin
 
 Using the compiled context from Step 0, build the research query. Do not ask the user for clarification — use the session context to determine the best research angle.
 
-Compose the query from session context + the user's research question:
+Compose the query from session context + the user's research question. **Start with the MANDATORY CONTEXT PREAMBLE** defined above, then append:
 
 ```
+[ENVIRONMENT CONTEXT — READ FIRST]
+This project is being developed using Claude Code, Anthropic's official CLI tool for Claude (claude.ai/claude-code). The developer uses a Claude Max subscription and works entirely in the terminal via the `claude` CLI command. Claude Code is an agentic coding assistant that reads/writes files, runs terminal commands, searches codebases, and executes multi-step development tasks autonomously. All code generation, refactoring, debugging, and project management happens through Claude Code's conversation interface — there is no IDE or GUI involved. Responses should account for this workflow: recommend CLI-compatible tools, terminal-based solutions, and approaches that work well with an AI coding agent operating in a command-line environment.
+[END ENVIRONMENT CONTEXT]
+
 You are a development strategy advisor analyzing a coding session. Given the project context (provided as system context), provide strategic analysis and concrete next steps.
 
 FOCUS AREA: {$ARGUMENTS or "general next steps — what should be the priority?"}
@@ -85,7 +99,7 @@ The `research_query` response contains the Perplexity synthesis. Present the key
 
 - Save output to `~/.claude/council-logs/{YYYY-MM-DD_HHmm}-research-{projectName}.md`
 
-### Step 5: Enter plan mode — MANDATORY
+### Step 5: Synthesize Plan — MANDATORY
 
 **IMMEDIATELY after receiving the research results, you MUST enter plan mode using the `EnterPlanMode` tool.** Do not ask the user, do not present the research first, do not do anything else — go straight into plan mode.
 
@@ -123,18 +137,82 @@ For each Phase in the master plan, write a detailed sub-plan:
   6. Topic file naming: kebab-case.md
 - **Final phase: Commit & Push** — commit all changes and push to remote
 
-#### Plan Verification — MANDATORY
+Write the full plan (master + all sub-plans), then proceed to **Step 6** — do NOT call `ExitPlanMode` yet.
 
-After writing the complete plan but BEFORE calling `ExitPlanMode`:
+### Step 6: Verify Plan via Second Perplexity Pass — MANDATORY, NO EXCEPTIONS
 
-1. **Build verification query**: Include the complete plan + research summary + key codebase files from Step 0.5
-2. **Run verification**: Call `research_query` with a critique-focused prompt asking Perplexity to evaluate: logical errors, missing edge cases, file path accuracy, dependency ordering, scope creep, feasibility
-3. **Revise plan**: If critique identifies issues, revise the plan. If APPROVED, proceed as-is.
-4. **Maximum 1 verification pass** — never re-verify after revision. Call ExitPlanMode.
+**This step is the hard gate before `ExitPlanMode`. NEVER skip it. NEVER call `ExitPlanMode` without completing this step. Skipping verification is a protocol violation — it applies regardless of plan size, complexity, or apparent correctness.**
 
-Write the full plan (master + all sub-plans), then call `ExitPlanMode` for user approval.
+#### 6.1: Close Browser Bridge Sessions
 
-After the user approves:
+Same as Step 1.5 — close active browser-bridge sessions before launching Playwright:
+
+1. Call `mcp__browser-bridge__browser_close_session`
+2. Wait 2 seconds (`sleep 2` via Bash)
+
+#### 6.2: Build the Verification Query
+
+Construct a critique-focused query containing:
+
+- **The complete plan text** (master plan + all sub-plans from Step 5)
+- **Research summary** (key findings from Step 3)
+- **Key codebase context** (file snippets from Step 0.5)
+
+Format the query as (**start with the MANDATORY CONTEXT PREAMBLE**, then the critique prompt):
+
+```
+[ENVIRONMENT CONTEXT — READ FIRST]
+This project is being developed using Claude Code, Anthropic's official CLI tool for Claude (claude.ai/claude-code). The developer uses a Claude Max subscription and works entirely in the terminal via the `claude` CLI command. Claude Code is an agentic coding assistant that reads/writes files, runs terminal commands, searches codebases, and executes multi-step development tasks autonomously. All code generation, refactoring, debugging, and project management happens through Claude Code's conversation interface — there is no IDE or GUI involved. Responses should account for this workflow: recommend CLI-compatible tools, terminal-based solutions, and approaches that work well with an AI coding agent operating in a command-line environment.
+[END ENVIRONMENT CONTEXT]
+
+You are a senior software architect reviewing an implementation plan. Critically evaluate this plan for correctness, completeness, and feasibility.
+
+## Plan to Review
+{complete plan text from Step 5}
+
+## Research Context
+{summary of findings from Step 3}
+
+## Codebase Context
+{key file snippets and structure from Step 0.5}
+
+Please evaluate:
+1. LOGICAL ERRORS: Are there contradictions, circular dependencies, or impossible sequences?
+2. MISSING EDGE CASES: What scenarios does the plan fail to address?
+3. FILE PATH ACCURACY: Do referenced files/paths actually exist in the codebase?
+4. DEPENDENCY ORDERING: Are phases ordered correctly given their prerequisites?
+5. SCOPE CREEP: Does the plan include unnecessary work beyond what was researched?
+6. FEASIBILITY: Are estimated complexities realistic? Are there hidden costs?
+7. RISK GAPS: What risks are unmitigated?
+8. VERDICT: APPROVED (proceed as-is) or REVISE (with specific changes needed)
+```
+
+#### 6.3: Run Verification
+
+Call `research_query` MCP tool with:
+- `query`: The critique prompt from 6.2
+- `includeContext`: `true`
+
+#### 6.4: Revise Plan (if needed)
+
+- If the critique identifies issues: revise the plan accordingly. **Maximum 1 revision pass** — do not re-verify after revision.
+- If the critique returns APPROVED: proceed as-is.
+
+#### 6.5: Exit Plan Mode
+
+**Only after completing 6.1–6.4**, call `ExitPlanMode` for user approval.
+
+#### Error Handling for Step 6
+
+If `research_query` fails in Step 6:
+1. Close browser-bridge sessions (`browser_close_session`)
+2. Wait 30 seconds for process cleanup
+3. Retry once
+4. If the retry also fails: note the failure reason in the plan file, then proceed to `ExitPlanMode` — but the attempt MUST be made
+
+### Step 7: Post-Approval Execution
+
+After the user approves the plan:
 - Use `TaskCreate` to create one task per Phase from the master plan
 - Set dependencies with `addBlockedBy` matching the phase prerequisites
 - Each task description should contain the full sub-plan for that phase
