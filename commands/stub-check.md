@@ -1,8 +1,8 @@
 # /stub-check — Deep Implementation Completeness Audit
 
-Perform a thorough 2-phase audit of the current project's codebase to find code that is unfinished, shallow, skeletal, or not production-ready. Phase 1 uses local scanning (Grep/Glob/Read). Phase 2 sends findings to Perplexity for cross-validation and gap detection.
+Perform a thorough 3-phase audit of the current project's codebase to find code that is unfinished, shallow, skeletal, or not production-ready. Phase 0.5 runs a Perplexity research reconnaissance using GitHub connectors (runs in parallel with Phase 1). Phase 1 uses local scanning (Grep/Glob/Read) independently. Phase 2 merges both passes through Perplexity for final depth/brevity validation.
 
-**Architecture**: Local scan first → Perplexity validation second (Semgrep/SonarQube pattern). $0 cost via Perplexity login session.
+**Architecture**: Research recon (Perplexity + GitHub connectors) runs IN PARALLEL with local pattern scan → merge → research validation last (depth + brevity). ~90s total overhead. $0 cost via Perplexity login session.
 
 **CRITICAL: Do NOT ask the user questions before completing all phases. Execute the full audit silently and present results at the end. Only interact if $ARGUMENTS specifies a subset of the codebase to audit.**
 
@@ -42,7 +42,76 @@ Before scanning, auto-detect which languages and frameworks are present. This de
 
 ---
 
+## Phase 0.5: Research Reconnaissance — FIRST CHECK
+
+**Purpose**: Use Perplexity's GitHub integration to scan the repository for architectural gaps and incomplete implementations that local grep patterns miss. Runs IN PARALLEL with Phase 1 — does NOT influence Phase 1's file selection (prevents confirmation bias). Results merge in Phase 2.
+
+**CRITICAL: Phase 0.5 must NOT feed its hit list to Phase 1. Phase 1 runs its full independent scan. The hit list is used ONLY in Phase 2 merge as a post-sort overlay.**
+
+### Step 0.5.0: Compile Session Context — MANDATORY, SILENT
+
+1. Read project `MEMORY.md` from auto-memory directory
+2. Run `git log --oneline -10` for recent work
+3. Run `git diff --stat` for uncommitted changes
+4. Use `Glob` for main source files, read structural files (README.md, pyproject.toml/package.json)
+5. Run `ls -R` or `Glob **/*` (depth-limited) to capture directory tree for grounding
+6. Synthesize internal context — do NOT output to user
+
+### Step 0.5.1: Close Browser Bridge Sessions — MANDATORY
+
+1. Call `mcp__browser-bridge__browser_close_session`
+2. Wait 2 seconds (`sleep 2` via Bash)
+
+### Step 0.5.2: Build Reconnaissance Query
+
+Use the MANDATORY CONTEXT PREAMBLE from `/research-perplexity`, then a **grounded** recon prompt:
+
+```
+[ENVIRONMENT CONTEXT — READ FIRST]
+This project is being developed using Claude Code, Anthropic's official CLI tool for Claude (claude.ai/claude-code). The developer uses a Claude Max subscription and works entirely in the terminal via the `claude` CLI command. Claude Code is an agentic coding assistant that reads/writes files, runs terminal commands, searches codebases, and executes multi-step development tasks autonomously. All code generation, refactoring, debugging, and project management happens through Claude Code's conversation interface — there is no IDE or GUI involved.
+[END ENVIRONMENT CONTEXT]
+
+You are a senior code auditor performing a **pre-scan reconnaissance**. Using your access to the repository, identify areas that appear unfinished, skeletal, or not production-ready.
+
+REPOSITORY STRUCTURE (for grounding — examine these actual files):
+{Insert directory tree from Step 0.5.0}
+
+KEY FILES:
+{Insert names + first 10 lines of main source files}
+
+DETECTED LANGUAGES: {from Step 0}
+SCAN FOCUS: {$ARGUMENTS if provided, otherwise "entire project"}
+
+Examine the actual files in this repository and provide:
+1. STUB CANDIDATES: Functions/methods that appear skeletal — short bodies, placeholder returns, TODO-heavy
+2. API CONTRACT GAPS: Endpoints defined but not fully implemented, missing validation
+3. ARCHITECTURAL GAPS: Missing modules or integrations referenced but not implemented
+4. TEST COVERAGE SUSPICIONS: Complex logic with no corresponding test files
+5. DEPENDENCY CONCERNS: Imported but underutilized modules
+
+FORMAT as a HIT LIST table:
+| File | Lines | Suspicion | Priority (CRITICAL/HIGH/MEDIUM/LOW) |
+
+IMPORTANT: Only flag items you can verify in the actual repository files. Do not speculate about files you cannot see.
+```
+
+### Step 0.5.3: Execute Reconnaissance Query
+
+Call `mcp__browser-bridge__research_query` with:
+- `query`: The recon prompt from Step 0.5.2
+- `includeContext`: `true`
+
+**Error handling**: If query fails, wait 5s and retry once. If still fails, log "Research recon unavailable — proceeding with local scan only" and continue. The audit is valid without recon.
+
+### Step 0.5.4: Hold Results for Phase 2
+
+Parse the response and extract the HIT LIST + findings. **Do NOT pass to Phase 1.** Hold in context for Phase 2 merge only.
+
+---
+
 ## Phase 1: Local Pattern Scan
+
+**Concurrency**: Phase 0.5 (research recon) and Phase 1 (local scan) run in parallel. Phase 1 operates independently — it does NOT use Phase 0.5's hit list for file selection. Both passes feed into Phase 2 for merge and validation.
 
 Systematically scan the codebase using Grep, Glob, and Read tools. Record every finding with file path, line number, category, and evidence. **Only use patterns for detected languages from Step 0.**
 
@@ -273,58 +342,95 @@ Move all filtered items to a separate "False Positives Detected" section in the 
 
 ---
 
-## Phase 2: Perplexity Cross-Validation
+## Phase 2: Research Validation — LAST CHECK
+
+Merge Phase 0.5 reconnaissance findings with Phase 1 local scan findings, then send through Perplexity for final depth/brevity validation.
 
 ### Step 2.0: Close Browser Bridge Sessions — MANDATORY
 
 1. Call `mcp__browser-bridge__browser_close_session`
 2. Wait 2 seconds (`sleep 2` via Bash)
 
-### Step 2.1: Build Cross-Validation Query
+### Step 2.1: Merge Findings
 
-Group Phase 1 findings by module/directory. For the top 3-5 modules with the most findings, build a Perplexity query:
+Combine both passes using these rules:
+
+**Matching**: Normalize file paths before comparison. Match findings by `(normalized_path, line_number)` — not string comparison. Two findings match if they reference the same file within ±5 lines.
+
+**Initial confidence tiers**:
+- Found by **both** Phase 0.5 AND Phase 1 → `corroborated` (HIGH confidence)
+- Found by **Phase 0.5 only** (research found, local missed) → `recon-only` (MEDIUM — architecturally interesting but unverified locally)
+- Found by **Phase 1 only** (local found, research missed) → `local-only` (MEDIUM — pattern match, needs validation)
+
+**Severity conflicts**: When Phase 0.5 and Phase 1 assign different severities to the same finding, use the **higher** severity (conservative — let Phase 2 validation downgrade if appropriate).
+
+**Empty recon**: If Phase 0.5 returned no hits or was skipped due to error, all Phase 1 findings get `local-only` confidence. Do NOT treat empty recon as "recon confirmed nothing wrong."
+
+### Step 2.2: Build Validation Query
+
+Use the MANDATORY CONTEXT PREAMBLE from `/research-perplexity`, then:
 
 ```
-You are a senior code auditor performing a production readiness review. I've run a local scan and found potential completeness gaps in a codebase. Your job is to:
+[ENVIRONMENT CONTEXT — READ FIRST]
+This project is being developed using Claude Code, Anthropic's official CLI tool for Claude (claude.ai/claude-code). The developer uses a Claude Max subscription and works entirely in the terminal via the `claude` CLI command. Claude Code is an agentic coding assistant that reads/writes files, runs terminal commands, searches codebases, and executes multi-step development tasks autonomously.
+[END ENVIRONMENT CONTEXT]
 
-1. VALIDATE each finding — is it a genuine gap or a false positive?
-2. FIND MISSING GAPS — what did the local scan miss? Look for:
-   - Missing error handling (no try/catch around I/O, network, or file operations)
-   - Missing retry logic or timeouts on external API calls
-   - Missing rate limiting on public endpoints
-   - Missing database transactions where atomicity is required
-   - Missing input sanitization or output encoding
-   - Missing logging/observability around critical operations
-   - State management gaps (stores defined but never connected)
-   - WebSocket/SSE connections opened but no message handling
-   - Middleware registered but not applied to routes
-   - Config/feature flags referenced but never used
-3. ASSESS SEVERITY — for each finding, rate as:
-   - CRITICAL: Blocks production use, security vulnerability, data loss risk
-   - HIGH: Works but fragile, will fail under load or edge cases
-   - MEDIUM: Incomplete but functional for happy path
-   - LOW: Polish, cleanup, or nice-to-have
+You are a senior code auditor performing the FINAL VALIDATION of a completeness audit. Two prior passes have run:
+1. RESEARCH RECONNAISSANCE (Perplexity + GitHub): Identified gaps from repository analysis
+2. LOCAL PATTERN SCAN (Grep/Glob): Found stub patterns, TODO markers, shallow implementations
+
+Your job is the definitive assessment. Respond in THREE SECTIONS:
+
+## SECTION A: DEPTH CHECK — What was missed?
+- Completeness gaps NEITHER pass caught
+- Missing error handling around I/O, network, file operations
+- Missing retry logic, timeouts, circuit breakers on external calls
+- Missing input validation or output encoding
+- State management gaps, middleware not applied, config referenced but unused
+
+## SECTION B: BREVITY CHECK — What should be removed or downgraded?
+- Which findings are FALSE POSITIVES? (intentional stubs, abstract interfaces, test mocks)
+- Which findings are DUPLICATES across the two passes?
+- Which severities are over-classified? (e.g., marked CRITICAL but actually MEDIUM)
+- IMPORTANT: Do NOT silently remove any finding. For each removal/downgrade, state the finding and the reason.
+
+## SECTION C: FINAL SEVERITY ASSESSMENT
+For each finding (kept, new, or downgraded), provide:
+- File:line
+- Final severity: CRITICAL / HIGH / MEDIUM / LOW
+- Source: corroborated / recon-only / local-only / validation-new
+- One-line justification
+
+RESEARCH RECONNAISSANCE FINDINGS:
+{Insert Phase 0.5 findings}
 
 LOCAL SCAN FINDINGS:
-{Insert grouped findings with file paths, line numbers, and evidence}
+{Insert Phase 1 findings grouped by module}
 
 CODEBASE CONTEXT:
-{Insert key architectural files: README.md sections, main module structure}
+{Insert key architectural files}
 ```
 
-### Step 2.2: Execute Research Query
+### Step 2.3: Execute Validation Query
 
 Call `mcp__browser-bridge__research_query` with:
-- `query`: The cross-validation prompt from Step 2.1
+- `query`: The validation prompt from Step 2.2
 - `includeContext`: `true`
 
-### Step 2.3: Merge Results
+### Step 2.4: Apply Validation Results
 
-Combine Phase 1 local findings with Phase 2 Perplexity findings:
-- Findings validated by both → **confidence: HIGH**
-- Findings only from local scan → **confidence: MEDIUM** (may be false positive)
-- Findings only from Perplexity → **confidence: MEDIUM** (verify manually)
-- Mark any Phase 1 findings that Perplexity flagged as false positives
+Process the response using these rules:
+
+1. **New findings** (Section A): Add with source `validation-new`, severity as assessed
+2. **False positives** (Section B): Mark as `potential_false_positive: true` with reason — do NOT delete. Move to False Positives section of report
+3. **Severity changes** (Section B): Phase 2 validation wins on downgrades (it has most context). Upgrades require the finding to explain why
+4. **Deduplicate** by `(file, line)` — keep the version with most context
+5. **Final confidence** after validation:
+   - `corroborated` + validated = `fully-validated` (highest)
+   - `recon-only` + validated = `recon-validated`
+   - `local-only` + validated = `local-validated`
+   - `validation-new` = new finding from this pass
+   - Any finding Phase 2 flagged as false positive = `disputed`
 
 ---
 
@@ -363,7 +469,7 @@ Present the complete audit report to the user. Format:
   {code snippet — 3-5 lines of context}
   ```
 - **Why critical**: {explanation}
-- **Confidence**: {HIGH if validated by Perplexity, MEDIUM if local-only}
+- **Confidence**: {fully-validated / recon-validated / local-validated / corroborated / recon-only / local-only / validation-new / disputed}
 
 {Repeat for each CRITICAL finding}
 
@@ -387,9 +493,15 @@ Present the complete audit report to the user. Format:
 
 ---
 
-## Perplexity-Only Findings
+## Recon-Only Findings
 
-{Gaps identified by Perplexity that the local scan missed}
+{Gaps identified by Phase 0.5 research reconnaissance that the local scan missed}
+
+---
+
+## Validation-New Findings
+
+{Gaps identified by Phase 2 validation that neither prior pass caught}
 
 ---
 
@@ -529,14 +641,17 @@ After the user approves the plan via `ExitPlanMode`:
 | Session expired | Report "run `/cache-perplexity-session` to refresh" |
 | Phase 5 skipped (no CRITICAL/HIGH) | Silently skip — present Phase 4 summary only |
 | Fix research query fails | Retry once after 5s; if still fails, report "run `/cache-perplexity-session` to refresh" and stop |
+| Recon query fails (Phase 0.5) | Log warning, skip recon, proceed with local scan only — all findings get `local-only` confidence |
+| Contradictory assessments | Phase 2 validation wins on severity downgrades; never silently deletes — marks `disputed` |
 
 ## Key Differences from Other Commands
 
 | Aspect | /stub-check | /research-perplexity | /review |
 |--------|-------------|---------------------|---------|
 | **Purpose** | Find incomplete code | Strategic analysis | Code quality review |
-| **Method** | Local scan + Perplexity validation | Perplexity only | Claude-only review |
-| **Output** | Severity-ranked finding list | Narrative analysis | Review comments |
+| **Method** | Research recon ∥ local scan → merge → research validation | Perplexity only | Claude-only review |
+| **Output** | Severity-ranked findings with multi-pass confidence | Narrative analysis | Review comments |
 | **Scope** | Entire codebase or module | Session context | Specific changes |
 | **Plan mode** | Automatic if CRITICAL/HIGH findings exist | Automatic | No |
+| **Research passes** | 2 (recon + validation, parallel with local) | 1 + 1 verification | 0 |
 | **Cost** | $0 | $0 | $0 |

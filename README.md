@@ -421,7 +421,7 @@ Place in `~/.claude/commands/` and invoke from Claude Code with `/<command-name>
 | `/fix-issue` | GitHub issue resolution |
 | `/review` | Code review |
 | `/init` | Project bootstrap & health check |
-| `/stub-check` | Implementation completeness audit |
+| `/stub-check` | 3-phase implementation completeness audit (research recon ∥ local scan ∥ research validation) |
 | `/handoff` | Agent handoff documentation |
 | `/portfolio-status` | Portfolio-wide status review |
 | `/spreadsheet-audit` | Excel spreadsheet audit |
