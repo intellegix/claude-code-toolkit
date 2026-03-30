@@ -128,11 +128,26 @@ BROWSER_SESSION_PATH = Path.home() / ".claude" / "config" / "playwright-session.
 SELECTORS_PATH = Path.home() / ".claude" / "perplexity-selectors.json"
 
 # --- Concurrent browser sessions ---
-MAX_CONCURRENT_SESSIONS = 3       # Max simultaneous Playwright browsers
-SEMAPHORE_TTL = 300               # seconds, auto-expire stale session slots
-SEMAPHORE_WAIT_TIMEOUT = 30       # seconds, wait for slot before BROWSER_BUSY
+MAX_CONCURRENT_SESSIONS = 8       # Max simultaneous Playwright browsers (8-10 stable on 32GB RAM)
+SEMAPHORE_TTL = 180               # seconds, auto-expire stale session slots (tighter with more instances)
+SEMAPHORE_WAIT_TIMEOUT = 60       # seconds, wait for slot before BROWSER_BUSY (longer queue with 8 slots)
 BROWSER_SESSIONS_DIR = Path.home() / ".claude" / "config" / "browser-sessions"
 BROWSER_LOCALSTORAGE_PATH = Path.home() / ".claude" / "config" / "playwright-localstorage.json"
+
+# --- Per-instance fingerprint diversification ---
+# Mandatory for >3 concurrent instances to avoid Cloudflare pattern detection
+INSTANCE_VIEWPORTS = [
+    (1920, 1080), (1920, 1200), (2560, 1440), (1680, 1050),
+    (1440, 900), (1366, 768), (2560, 1600), (1280, 800),
+]
+INSTANCE_LANGUAGES = [
+    "en-US,en;q=0.9", "en-US,en;q=0.9,es;q=0.8",
+    "en-GB,en;q=0.9", "en-US,en;q=0.9,fr;q=0.8",
+    "en-US,en;q=0.9,de;q=0.7", "en-US,en;q=0.9,pt;q=0.8",
+    "en-US,en;q=0.9,ja;q=0.7", "en-US,en;q=0.9,ko;q=0.8",
+]
+# Disable GPU for instances at/above this slot number to prevent VRAM contention
+INSTANCE_GPU_CUTOFF = 6  # slots 0-5 use GPU, slots 6-7 use software rendering
 
 # --- Vision monitoring (Claude Haiku for page state detection) ---
 VISION_MODEL = "claude-haiku-4-5-20251001"

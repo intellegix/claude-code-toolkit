@@ -47,6 +47,9 @@ from council_config import (
     BROWSER_MIN_GENERATION_TIME_MS,
     BROWSER_CONFIRMATION_WINDOW_MS,
     BROWSER_MUTATION_STABILITY_MS,
+    INSTANCE_GPU_CUTOFF,
+    INSTANCE_LANGUAGES,
+    INSTANCE_VIEWPORTS,
     MAX_CONCURRENT_SESSIONS,
     SELECTORS_PATH,
     SEMAPHORE_TTL,
@@ -66,10 +69,11 @@ class BrowserBusyError(Exception):
 
 
 class SessionSemaphore:
-    """File-based counting semaphore for concurrent browser sessions.
+    """File-based named-slot semaphore for concurrent browser sessions.
 
-    Each active session creates a PID-named file in BROWSER_SESSIONS_DIR.
-    Supports wait-with-timeout instead of immediate failure.
+    Uses named slots (slot-0.lock through slot-N.lock) instead of PID-named files
+    for deterministic instance_id assignment. Each slot file contains "PID TIMESTAMP".
+    acquire() returns the slot number as instance_id for fingerprint diversification.
     Stale sessions are cleaned via PID liveness check + TTL expiry.
     """
 
@@ -84,12 +88,13 @@ class SessionSemaphore:
         self.sessions_dir = sessions_dir or BROWSER_SESSIONS_DIR
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self._session_file: Path | None = None
+        self.instance_id: int = 0
 
     def _cleanup_stale(self) -> int:
-        """Remove session files for dead PIDs or expired TTL. Returns count removed."""
+        """Remove slot files for dead PIDs or expired TTL. Returns count removed."""
         removed = 0
         now = time.time()
-        for f in self.sessions_dir.glob("session-*.lock"):
+        for f in self.sessions_dir.glob("slot-*.lock"):
             try:
                 content = f.read_text(encoding="utf-8").strip()
                 parts = content.split()
@@ -121,29 +126,49 @@ class SessionSemaphore:
 
         return removed
 
+    def _cleanup_orphaned_temp_dirs(self) -> None:
+        """Remove orphaned council temp profile dirs older than 10 minutes."""
+        import glob as glob_mod
+        tmp = tempfile.gettempdir()
+        for pattern in ["council_np_*", "council_cf_*"]:
+            for d in glob_mod.glob(os.path.join(tmp, pattern)):
+                try:
+                    if not os.path.isdir(d):
+                        continue
+                    age = time.time() - os.path.getmtime(d)
+                    if age > 600:  # 10 minutes
+                        shutil.rmtree(d, ignore_errors=True)
+                except OSError:
+                    pass
+
     def _count_active(self) -> int:
-        """Count active session files (after cleanup)."""
-        return len(list(self.sessions_dir.glob("session-*.lock")))
+        """Count active slot files (after cleanup)."""
+        return len(list(self.sessions_dir.glob("slot-*.lock")))
 
-    def acquire(self, wait_timeout: float = SEMAPHORE_WAIT_TIMEOUT) -> None:
-        """Acquire a session slot. Waits up to wait_timeout seconds.
+    def acquire(self, wait_timeout: float = SEMAPHORE_WAIT_TIMEOUT) -> int:
+        """Acquire a named session slot. Waits up to wait_timeout seconds.
 
+        Returns the slot number (0..max_sessions-1) as instance_id.
         Raises BrowserBusyError if no slot becomes available.
         """
+        self._cleanup_orphaned_temp_dirs()
         start = time.time()
         pid = os.getpid()
 
         while True:
             self._cleanup_stale()
-            active = self._count_active()
-
-            if active < self.max_sessions:
-                # Claim a slot
-                self._session_file = self.sessions_dir / f"session-{pid}.lock"
-                self._session_file.write_text(
-                    f"{pid} {time.time():.0f}\n", encoding="utf-8"
-                )
-                return
+            for slot in range(self.max_sessions):
+                slot_file = self.sessions_dir / f"slot-{slot}.lock"
+                if not slot_file.exists():
+                    try:
+                        slot_file.write_text(
+                            f"{pid} {time.time():.0f}\n", encoding="utf-8"
+                        )
+                        self._session_file = slot_file
+                        self.instance_id = slot
+                        return slot
+                    except OSError:
+                        continue  # Another process claimed it first
 
             elapsed = time.time() - start
             if elapsed >= wait_timeout:
@@ -155,7 +180,7 @@ class SessionSemaphore:
             time.sleep(1)
 
     def release(self) -> None:
-        """Release the session slot by deleting the session file."""
+        """Release the session slot by deleting the slot file."""
         if self._session_file and self._session_file.exists():
             try:
                 self._session_file.unlink()
@@ -275,6 +300,7 @@ class PerplexityCouncil:
         perplexity_mode: str = "council",
         use_persistent: bool = False,
         headless_fallback: bool = BROWSER_HEADLESS_FALLBACK,
+        instance_id: int = 0,
     ):
         self.headless = headless
         self.headless_fallback = headless_fallback
@@ -289,6 +315,7 @@ class PerplexityCouncil:
         self.save_artifacts = save_artifacts
         self.perplexity_mode = perplexity_mode
         self.use_persistent = use_persistent
+        self.instance_id = instance_id
         self.selectors = _load_selectors()
         self.playwright = None
         self._browser = None  # Separate browser object (non-persistent mode)
@@ -373,25 +400,53 @@ class PerplexityCouncil:
         return storage_state
 
     @staticmethod
-    def _chrome_args() -> list[str]:
-        """Shared Chrome launch arguments for all launch methods."""
-        return [
+    def _get_instance_fingerprint(instance_id: int = 0) -> dict:
+        """Deterministic per-instance fingerprint for Cloudflare evasion."""
+        import hashlib
+        seed = hashlib.md5(f"council_{instance_id}".encode()).hexdigest()
+        vp = INSTANCE_VIEWPORTS[instance_id % len(INSTANCE_VIEWPORTS)]
+        lang = INSTANCE_LANGUAGES[instance_id % len(INSTANCE_LANGUAGES)]
+        return {"viewport": vp, "language": lang, "seed": seed}
+
+    @staticmethod
+    def _chrome_args(instance_id: int = 0) -> list[str]:
+        """Shared Chrome launch arguments for all launch methods.
+
+        Per-instance: window offset, resource limits, GPU control.
+        """
+        fp = PerplexityCouncil._get_instance_fingerprint(instance_id)
+        vp_w, vp_h = fp["viewport"]
+        args = [
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-dev-shm-usage",
             "--disable-features=IsolateOrigins,site-per-process",
-            "--window-size=1920,1080",
+            f"--window-size={vp_w},{vp_h}",
+            # Resource-saving (all instances)
+            "--disable-background-networking",
+            "--disable-extensions",
+            "--disable-sync",
+            "--disable-translate",
+            "--metrics-recording-only",
+            "--no-report-upload",
+            "--disk-cache-size=10485760",  # 10MB disk cache per instance
+            # Per-instance window offset
+            f"--window-position={100 + (instance_id * 60)},{100 + (instance_id * 40)}",
         ]
+        if instance_id >= INSTANCE_GPU_CUTOFF:
+            args.extend(["--disable-gpu", "--use-angle=swiftshader"])
+        return args
 
     @staticmethod
-    def _stealth_scripts() -> str:
+    def _stealth_scripts(fingerprint: dict | None = None) -> str:
         """Return JavaScript to reduce automation detection.
 
         Masks: webdriver flag, chrome.runtime/csi/loadTimes, Playwright globals,
         navigator.plugins, navigator.languages, WebGL vendor/renderer.
+        When fingerprint is provided, appends per-instance canvas noise and language override.
         """
-        return """
+        base_scripts = """
             // Hide webdriver flag
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 
@@ -461,6 +516,29 @@ class PerplexityCouncil:
                 return getParameter2.call(this, param);
             };
         """
+
+        if fingerprint:
+            seed = fingerprint["seed"]
+            lang = fingerprint.get("language", "en-US,en")
+            extra = f"""
+            // Per-instance canvas noise (fingerprint diversification)
+            const _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+            CanvasRenderingContext2D.prototype.getImageData = function(x, y, w, h) {{
+                const data = _origGetImageData.call(this, x, y, w, h);
+                const noise = parseInt('{seed[:4]}', 16) % 5;
+                for (let i = 0; i < data.data.length; i += 100) {{
+                    data.data[i] = (data.data[i] + noise) % 256;
+                }}
+                return data;
+            }};
+            // Per-instance language override
+            Object.defineProperty(navigator, 'languages', {{
+                get: () => '{lang}'.split(',').map(l => l.split(';')[0].trim()),
+            }});
+            """
+            return base_scripts + extra
+
+        return base_scripts
 
     async def _detect_cloudflare(self, page) -> bool:
         """Check if the current page is a Cloudflare challenge/block page."""
@@ -534,33 +612,39 @@ class PerplexityCouncil:
         Each session gets its own user-data-dir via launch_persistent_context()
         to prevent Chrome SingletonLock conflicts when multiple instances run
         concurrently. Cookies injected via _load_session() after launch.
+        Per-instance fingerprint diversification applied via instance_id.
         """
         self._temp_profile_dir = tempfile.mkdtemp(prefix="council_np_")
-        _log(f"Non-persistent: using isolated profile {self._temp_profile_dir}")
+        fp = self._get_instance_fingerprint(self.instance_id)
+        vp_w, vp_h = fp["viewport"]
+        _log(f"Non-persistent: instance={self.instance_id} profile={self._temp_profile_dir} viewport={vp_w}x{vp_h}")
 
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=self._temp_profile_dir,
             channel="chrome",
             headless=self.headless,
-            args=self._chrome_args(),
-            viewport={"width": 1920, "height": 1080},
+            args=self._chrome_args(instance_id=self.instance_id),
+            viewport={"width": vp_w, "height": vp_h},
         )
 
         if self.session_path.exists():
             await self._load_session()
 
-        # Apply stealth scripts
-        await self.context.add_init_script(self._stealth_scripts())
+        # Apply stealth scripts with per-instance fingerprint
+        await self.context.add_init_script(self._stealth_scripts(fingerprint=fp))
 
     async def _start_persistent(self) -> None:
-        """Launch with persistent context (used for --save-session only)."""
+        """Launch with persistent context (used for --save-session only).
+
+        Always uses instance_id=0 (login sessions don't need fingerprint diversification).
+        """
         BROWSER_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=str(BROWSER_USER_DATA_DIR),
             channel="chrome",
             headless=self.headless,
-            args=self._chrome_args(),
+            args=self._chrome_args(instance_id=0),
             viewport={"width": 1920, "height": 1080},
         )
 
@@ -574,22 +658,25 @@ class PerplexityCouncil:
 
         Uses a unique temp dir per session — no SingletonLock conflicts.
         Cookies injected via _load_session() after launch.
+        Per-instance fingerprint diversification applied via instance_id.
         """
         self._temp_profile_dir = tempfile.mkdtemp(prefix="council_cf_")
-        _log(f"Cloudflare fallback: using temp profile {self._temp_profile_dir}")
+        fp = self._get_instance_fingerprint(self.instance_id)
+        vp_w, vp_h = fp["viewport"]
+        _log(f"Cloudflare fallback: instance={self.instance_id} profile={self._temp_profile_dir} viewport={vp_w}x{vp_h}")
 
         self.context = await self.playwright.chromium.launch_persistent_context(
             user_data_dir=self._temp_profile_dir,
             channel="chrome",
             headless=self.headless,
-            args=self._chrome_args(),
-            viewport={"width": 1920, "height": 1080},
+            args=self._chrome_args(instance_id=self.instance_id),
+            viewport={"width": vp_w, "height": vp_h},
         )
 
         if self.session_path.exists():
             await self._load_session()
 
-        await self.context.add_init_script(self._stealth_scripts())
+        await self.context.add_init_script(self._stealth_scripts(fingerprint=fp))
 
     async def _load_session(self) -> None:
         """Load session from playwright-session.json + playwright-localstorage.json."""
@@ -1815,7 +1902,8 @@ class PerplexityCouncil:
         self._semaphore = SessionSemaphore()
 
         try:
-            self._semaphore.acquire(SEMAPHORE_WAIT_TIMEOUT)
+            instance_id = self._semaphore.acquire(SEMAPHORE_WAIT_TIMEOUT)
+            self.instance_id = instance_id
         except BrowserBusyError as e:
             return {
                 "error": str(e),
