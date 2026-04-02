@@ -26,6 +26,7 @@ page/test. NEVER abort the full run because of a single page failure.**
 | `--deep` | Set page cap to 50 instead of 20 | off |
 | `--auth-cookie <name=value>` | Inject a session cookie before crawl | none |
 | `--skip-visual` | Skip visual/UX quality checks (Tier 1.7) | enabled |
+| `--skip-design` | Skip visual design quality checks (Tier 1.8) | enabled |
 | `--allow-submit` | Allow form submission (localhost/staging only) | off |
 
 ---
@@ -501,6 +502,447 @@ and `prefers-reduced-motion` in one pass.
 | Dark mode | - | Not supported (info) |
 | 100vh trap | - | Any element (mobile risk) |
 
+See also: Tier 1.8 Visual Design Quality checks below for spacing, rhythm, elevation, and cognitive load analysis.
+
+---
+
+## Step 3.7: Tier 1.8 — Visual Design Quality (per page, skip if `--skip-design`)
+
+All checks via `mcp__browser-bridge__browser_evaluate` — no external libraries. Runs per page.
+Target: < 2s per page for all 10 checks combined. Returns a composite **Visual Design Quality
+Score (VDQS, 0-100)** grading overall design system discipline.
+
+VDQS Grades: A (90-100) = tight design system | B (75-89) = minor inconsistencies |
+C (60-74) = moderate drift | D (40-59) = significant design debt | F (<40) = no discernible system
+
+### 3.7.1 Spacing Entropy Score (15pts)
+
+TreeWalker (cap 400 els) + getComputedStyle on margin/padding/gap. Count unique spacing values.
+Check grid adherence (4px/8px multiples). PASS ≤8 unique, WARN 9-12, FAIL >12. Demote if grid
+adherence <60%.
+
+```js
+(() => {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
+    acceptNode: n => n.offsetParent !== null || n === document.body ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+  });
+  const spacingValues = new Map();
+  const props = ['marginTop','marginRight','marginBottom','marginLeft','paddingTop','paddingRight','paddingBottom','paddingLeft','gap','rowGap','columnGap'];
+  let count = 0;
+  while (walker.nextNode() && count < 400) {
+    const s = getComputedStyle(walker.currentNode);
+    for (const p of props) {
+      const v = parseFloat(s[p]);
+      if (v > 0 && v < 200) {
+        const rounded = Math.round(v);
+        spacingValues.set(rounded, (spacingValues.get(rounded) || 0) + 1);
+      }
+    }
+    count++;
+  }
+  const unique = [...spacingValues.keys()].sort((a, b) => a - b);
+  const onGrid = unique.filter(v => v % 4 === 0).length;
+  const gridAdherence = unique.length > 0 ? Math.round((onGrid / unique.length) * 100) : 100;
+  let status = unique.length <= 8 ? 'PASS' : unique.length <= 12 ? 'WARN' : 'FAIL';
+  if (status === 'PASS' && gridAdherence < 60) status = 'WARN';
+  return {
+    check: '3.7.1-spacing-entropy', status, weight: 15,
+    uniqueCount: unique.length, uniqueValues: unique.slice(0, 20),
+    gridAdherence, elementsScanned: count,
+    topValues: [...spacingValues.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([v, c]) => ({ value: v, count: c }))
+  };
+})()
+```
+
+### 3.7.2 Visual Rhythm Index (12pts)
+
+getBoundingClientRect on section/article/card blocks (cap 30). Compute inter-block gaps, calculate
+CV (sigma/mu). PASS CV<0.2, WARN 0.2-0.5, FAIL >0.5. SKIP if <3 blocks.
+
+```js
+(() => {
+  const blocks = [...document.querySelectorAll('section, article, [class*="card"], [class*="Card"], main > div > div')]
+    .filter(el => el.offsetParent !== null && el.getBoundingClientRect().height > 40)
+    .slice(0, 30);
+  if (blocks.length < 3) return { check: '3.7.2-visual-rhythm', status: 'SKIP', weight: 12, reason: 'fewer than 3 content blocks found', blockCount: blocks.length };
+  const rects = blocks.map(el => el.getBoundingClientRect());
+  const gaps = [];
+  for (let i = 1; i < rects.length; i++) {
+    const gap = rects[i].top - rects[i - 1].bottom;
+    if (gap >= 0 && gap < 500) gaps.push(Math.round(gap));
+  }
+  if (gaps.length < 2) return { check: '3.7.2-visual-rhythm', status: 'SKIP', weight: 12, reason: 'insufficient measurable gaps', gapCount: gaps.length };
+  const mean = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+  const variance = gaps.reduce((s, g) => s + (g - mean) ** 2, 0) / gaps.length;
+  const stddev = Math.sqrt(variance);
+  const cv = mean > 0 ? Math.round((stddev / mean) * 100) / 100 : 0;
+  const status = cv < 0.2 ? 'PASS' : cv <= 0.5 ? 'WARN' : 'FAIL';
+  return {
+    check: '3.7.2-visual-rhythm', status, weight: 12,
+    cv, mean: Math.round(mean), stddev: Math.round(stddev),
+    gapValues: gaps, blockCount: blocks.length
+  };
+})()
+```
+
+### 3.7.3 Elevation Layer Audit (8pts)
+
+Walk box-shadow values (cap 500 els). Normalize shadows (round to 2px, normalize alpha to 1
+decimal). Count unique. PASS ≤4, WARN 5, FAIL >5. Zero shadows = PASS (flat design valid).
+
+```js
+(() => {
+  const els = [...document.querySelectorAll('*')].filter(el => el.offsetParent !== null).slice(0, 500);
+  const shadowSet = new Set();
+  for (const el of els) {
+    const shadow = getComputedStyle(el).boxShadow;
+    if (shadow && shadow !== 'none') {
+      const normalized = shadow.replace(/[\d.]+px/g, m => {
+        return Math.round(parseFloat(m) / 2) * 2 + 'px';
+      }).replace(/[\d.]+\)/g, m => {
+        return (Math.round(parseFloat(m) * 10) / 10) + ')';
+      });
+      shadowSet.add(normalized);
+    }
+  }
+  const uniqueCount = shadowSet.size;
+  let status;
+  if (uniqueCount === 0) status = 'PASS';
+  else if (uniqueCount <= 4) status = 'PASS';
+  else if (uniqueCount === 5) status = 'WARN';
+  else status = 'FAIL';
+  return {
+    check: '3.7.3-elevation-layers', status, weight: 8,
+    uniqueShadows: uniqueCount,
+    shadows: [...shadowSet].slice(0, 8).map(s => s.slice(0, 80)),
+    note: uniqueCount === 0 ? 'flat design (no shadows) — valid' : null
+  };
+})()
+```
+
+### 3.7.4 Whitespace Breathing Room (10pts)
+
+For card/panel/widget/tile/article elements (cap 20). Compute fillRatio = sum(childContentArea) /
+parentBoundingArea. PASS if 35-92%, WARN outside. FAIL if >30% of cards are out of range.
+
+```js
+(() => {
+  const containers = [...document.querySelectorAll('[class*="card"], [class*="Card"], [class*="panel"], [class*="Panel"], [class*="widget"], [class*="tile"], article')]
+    .filter(el => el.offsetParent !== null && el.children.length > 0)
+    .slice(0, 20);
+  if (containers.length === 0) return { check: '3.7.4-whitespace-breathing', status: 'SKIP', weight: 10, reason: 'no card/panel/widget elements found' };
+  const results = [];
+  let outOfRange = 0;
+  for (const container of containers) {
+    const parentRect = container.getBoundingClientRect();
+    const parentArea = parentRect.width * parentRect.height;
+    if (parentArea < 100) continue;
+    let childArea = 0;
+    for (const child of container.children) {
+      if (child.offsetParent === null) continue;
+      const r = child.getBoundingClientRect();
+      childArea += r.width * r.height;
+    }
+    const fillRatio = Math.round((childArea / parentArea) * 100);
+    const ok = fillRatio >= 35 && fillRatio <= 92;
+    if (!ok) outOfRange++;
+    results.push({ tag: container.tagName, class: (container.className?.toString() || '').slice(0, 30), fillRatio, ok });
+  }
+  const total = results.length || 1;
+  const outPct = Math.round((outOfRange / total) * 100);
+  const status = outPct > 30 ? 'FAIL' : outOfRange > 0 ? 'WARN' : 'PASS';
+  return {
+    check: '3.7.4-whitespace-breathing', status, weight: 10,
+    outOfRange, total: results.length, outPct,
+    details: results.slice(0, 10)
+  };
+})()
+```
+
+### 3.7.5 Transition Vocabulary (8pts)
+
+getComputedStyle on interactive elements (cap 200) for transitionTimingFunction +
+transitionDuration. Normalize cubic-bezier to 2-decimal, bucket durations to 50ms.
+PASS ≤3 unique easings, WARN 4-5, FAIL >5.
+
+```js
+(() => {
+  const els = [...document.querySelectorAll('button, a[href], input, select, textarea, [role="button"], [role="tab"], [class*="btn"]')]
+    .filter(el => el.offsetParent !== null).slice(0, 200);
+  const easings = new Set();
+  const durations = new Set();
+  for (const el of els) {
+    const s = getComputedStyle(el);
+    const tf = s.transitionTimingFunction;
+    const td = s.transitionDuration;
+    if (td && td !== '0s') {
+      const normalizedEasing = tf.replace(/(\d+\.\d{3,})/g, m => parseFloat(m).toFixed(2));
+      easings.add(normalizedEasing);
+      const ms = td.split(',').map(d => {
+        const v = parseFloat(d);
+        return d.includes('ms') ? Math.round(v / 50) * 50 : Math.round(v * 1000 / 50) * 50;
+      });
+      ms.forEach(m => durations.add(m));
+    }
+  }
+  const uniqueEasings = easings.size;
+  const status = uniqueEasings <= 3 ? 'PASS' : uniqueEasings <= 5 ? 'WARN' : 'FAIL';
+  return {
+    check: '3.7.5-transition-vocab', status, weight: 8,
+    uniqueEasings, uniqueDurations: durations.size,
+    easingList: [...easings].slice(0, 8),
+    durationBuckets: [...durations].sort((a, b) => a - b),
+    elementsScanned: els.length,
+    note: easings.size === 0 ? 'no transitions found on interactive elements' : null
+  };
+})()
+```
+
+### 3.7.6 Border Radius Consistency (8pts)
+
+Extract border-radius from buttons/inputs/cards/badges (cap 300). Round to nearest px.
+PASS ≤4 unique, WARN 5-6, FAIL >6.
+
+```js
+(() => {
+  const els = [...document.querySelectorAll('button, input, select, textarea, [class*="card"], [class*="Card"], [class*="badge"], [class*="Badge"], [class*="btn"], [class*="chip"], [class*="tag"], [role="button"]')]
+    .filter(el => el.offsetParent !== null).slice(0, 300);
+  const radii = new Map();
+  for (const el of els) {
+    const br = getComputedStyle(el).borderRadius;
+    if (br && br !== '0px') {
+      const normalized = br.replace(/[\d.]+px/g, m => Math.round(parseFloat(m)) + 'px');
+      radii.set(normalized, (radii.get(normalized) || 0) + 1);
+    }
+  }
+  const uniqueCount = radii.size;
+  const status = uniqueCount <= 4 ? 'PASS' : uniqueCount <= 6 ? 'WARN' : 'FAIL';
+  return {
+    check: '3.7.6-border-radius', status, weight: 8,
+    uniqueCount,
+    values: [...radii.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([v, c]) => ({ radius: v, count: c })),
+    elementsScanned: els.length
+  };
+})()
+```
+
+### 3.7.7 Typographic Scale Coherence (12pts)
+
+Extract font-size/weight/family from text elements (cap 400). Test consecutive size ratios
+against modular scales (1.25, 1.333, 1.5). PASS ≤5 sizes, WARN 6-7, FAIL >7. Override to
+WARN if scale adherence <50%.
+
+```js
+(() => {
+  const textEls = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,span,a,li,td,th,label,button,blockquote')]
+    .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0).slice(0, 400);
+  const sizeMap = new Map();
+  const weightSet = new Set();
+  const familySet = new Set();
+  for (const el of textEls) {
+    const s = getComputedStyle(el);
+    const size = Math.round(parseFloat(s.fontSize));
+    sizeMap.set(size, (sizeMap.get(size) || 0) + 1);
+    weightSet.add(s.fontWeight);
+    const primary = s.fontFamily.split(',')[0].trim().replace(/['"]/g, '');
+    familySet.add(primary);
+  }
+  const sizes = [...sizeMap.keys()].sort((a, b) => a - b);
+  const scales = [1.125, 1.2, 1.25, 1.333, 1.414, 1.5, 1.618];
+  let bestScale = null, bestAdherence = 0;
+  for (const scale of scales) {
+    let matches = 0;
+    for (let i = 1; i < sizes.length; i++) {
+      const ratio = sizes[i] / sizes[i - 1];
+      if (Math.abs(ratio - scale) < 0.15 || Math.abs(ratio - 1) < 0.05) matches++;
+    }
+    const adherence = sizes.length > 1 ? Math.round((matches / (sizes.length - 1)) * 100) : 100;
+    if (adherence > bestAdherence) { bestAdherence = adherence; bestScale = scale; }
+  }
+  let status = sizes.length <= 5 ? 'PASS' : sizes.length <= 7 ? 'WARN' : 'FAIL';
+  if (status === 'PASS' && bestAdherence < 50) status = 'WARN';
+  return {
+    check: '3.7.7-typographic-scale', status, weight: 12,
+    uniqueSizes: sizes.length, sizes,
+    sizeDistribution: [...sizeMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([s, c]) => ({ size: s, count: c })),
+    bestScale, scaleAdherence: bestAdherence,
+    uniqueWeights: [...weightSet], uniqueFamilies: [...familySet],
+    elementsScanned: textEls.length
+  };
+})()
+```
+
+### 3.7.8 Cognitive Load Index (12pts)
+
+Composite: uniqueColors(bucketed to 32-unit steps)x0.3 + fontWeightsx0.2 + interactiveElementsx0.25
++ sectionsx0.15 + imagesx0.1. PASS CLI<12, WARN 12-20, FAIL >20.
+
+```js
+(() => {
+  const visible = [...document.querySelectorAll('*')].filter(el => el.offsetParent !== null).slice(0, 300);
+  const colorBuckets = new Set();
+  for (const el of visible) {
+    const s = getComputedStyle(el);
+    for (const prop of ['color', 'backgroundColor']) {
+      const m = s[prop].match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (m) {
+        const [r, g, b] = [m[1], m[2], m[3]].map(v => Math.round(+v / 32) * 32);
+        if (!(r === 256 && g === 256 && b === 256) && !(r === 0 && g === 0 && b === 0))
+          colorBuckets.add(`${r},${g},${b}`);
+      }
+    }
+  }
+  const weights = new Set(visible.slice(0, 100).map(el => getComputedStyle(el).fontWeight));
+  const interactive = document.querySelectorAll('button, a[href], input, select, textarea, [role="button"], [onclick]').length;
+  const sections = document.querySelectorAll('section, article, main, aside, nav, header, footer').length;
+  const images = document.querySelectorAll('img, svg, video, canvas, [class*="icon"]').length;
+  const cli = Math.round(
+    colorBuckets.size * 0.3 + weights.size * 0.2 + interactive * 0.25 + sections * 0.15 + images * 0.1
+  );
+  const status = cli < 12 ? 'PASS' : cli <= 20 ? 'WARN' : 'FAIL';
+  return {
+    check: '3.7.8-cognitive-load', status, weight: 12,
+    cli, components: {
+      uniqueColors: colorBuckets.size, fontWeights: weights.size,
+      interactiveElements: interactive, sections, images
+    }
+  };
+})()
+```
+
+### 3.7.9 Alignment Grid Fidelity (8pts)
+
+Sample left-edge X of content blocks (cap 50, above-fold only). Cluster edges within 8px
+tolerance. Measure alignment percentage. PASS >=70%, WARN 50-69%, FAIL <50%.
+
+```js
+(() => {
+  const viewportHeight = window.innerHeight;
+  const blocks = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,ul,ol,section,article,div,form,table,blockquote')]
+    .filter(el => {
+      if (el.offsetParent === null) return false;
+      const r = el.getBoundingClientRect();
+      return r.top < viewportHeight && r.height > 20 && r.width > 50;
+    })
+    .slice(0, 50);
+  if (blocks.length < 5) return { check: '3.7.9-alignment-grid', status: 'SKIP', weight: 8, reason: 'fewer than 5 above-fold blocks', blockCount: blocks.length };
+  const leftEdges = blocks.map(el => Math.round(el.getBoundingClientRect().left));
+  const clusters = [];
+  for (const x of leftEdges) {
+    const cluster = clusters.find(c => Math.abs(c.center - x) <= 8);
+    if (cluster) {
+      cluster.members++;
+      cluster.center = Math.round((cluster.center * (cluster.members - 1) + x) / cluster.members);
+    } else {
+      clusters.push({ center: x, members: 1 });
+    }
+  }
+  clusters.sort((a, b) => b.members - a.members);
+  const alignedCount = clusters.slice(0, 3).reduce((s, c) => s + c.members, 0);
+  const alignPct = Math.round((alignedCount / leftEdges.length) * 100);
+  const status = alignPct >= 70 ? 'PASS' : alignPct >= 50 ? 'WARN' : 'FAIL';
+  return {
+    check: '3.7.9-alignment-grid', status, weight: 8,
+    alignPct, totalBlocks: leftEdges.length,
+    topClusters: clusters.slice(0, 5).map(c => ({ xPosition: c.center, count: c.members })),
+    alignedToTop3: alignedCount
+  };
+})()
+```
+
+### 3.7.10 Semantic Color Proximity (7pts)
+
+sRGB-to-CIELAB conversion (pure JS), deltaE between success/error/warning color pairs found via
+class-name probing. PASS all pairs deltaE>=10, WARN 1 pair <10, FAIL >=2 pairs <10. SKIP if
+semantic elements not found.
+
+```js
+(() => {
+  function srgbToLab(r, g, b) {
+    let [lr, lg, lb] = [r, g, b].map(c => {
+      c = c / 255;
+      return c > 0.04045 ? Math.pow((c + 0.055) / 1.055, 2.4) : c / 12.92;
+    });
+    let x = (lr * 0.4124564 + lg * 0.3575761 + lb * 0.1804375) / 0.95047;
+    let y = (lr * 0.2126729 + lg * 0.7151522 + lb * 0.0721750);
+    let z = (lr * 0.0193339 + lg * 0.1191920 + lb * 0.9503041) / 1.08883;
+    [x, y, z] = [x, y, z].map(v => v > 0.008856 ? Math.cbrt(v) : (7.787 * v) + 16 / 116);
+    return { L: 116 * y - 16, a: 500 * (x - y), b: 200 * (y - z) };
+  }
+  function deltaE(lab1, lab2) {
+    return Math.sqrt((lab1.L - lab2.L) ** 2 + (lab1.a - lab2.a) ** 2 + (lab1.b - lab2.b) ** 2);
+  }
+  function parseColor(str) {
+    const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    return m ? { r: +m[1], g: +m[2], b: +m[3] } : null;
+  }
+  const semanticProbes = {
+    success: ['[class*="success"]', '[class*="Success"]', '.text-green', '.text-emerald', '[class*="positive"]'],
+    error: ['[class*="error"]', '[class*="Error"]', '[class*="danger"]', '[class*="Danger"]', '.text-red', '[class*="destructive"]'],
+    warning: ['[class*="warning"]', '[class*="Warning"]', '.text-yellow', '.text-amber', '[class*="caution"]'],
+    info: ['[class*="info"]:not([class*="information"])', '[class*="Info"]', '.text-blue', '[class*="primary"]']
+  };
+  const found = {};
+  for (const [role, selectors] of Object.entries(semanticProbes)) {
+    for (const sel of selectors) {
+      try {
+        const el = document.querySelector(sel);
+        if (el && el.offsetParent !== null) {
+          const color = parseColor(getComputedStyle(el).color) || parseColor(getComputedStyle(el).backgroundColor);
+          if (color && !(color.r === 0 && color.g === 0 && color.b === 0)) {
+            found[role] = { ...color, selector: sel };
+            break;
+          }
+        }
+      } catch(e) {}
+    }
+  }
+  const roles = Object.keys(found);
+  if (roles.length < 2) return { check: '3.7.10-semantic-color', status: 'SKIP', weight: 7, reason: `only ${roles.length} semantic color(s) found`, found: roles };
+  const pairs = [];
+  let lowPairs = 0;
+  for (let i = 0; i < roles.length; i++) {
+    for (let j = i + 1; j < roles.length; j++) {
+      const c1 = found[roles[i]], c2 = found[roles[j]];
+      const lab1 = srgbToLab(c1.r, c1.g, c1.b);
+      const lab2 = srgbToLab(c2.r, c2.g, c2.b);
+      const de = Math.round(deltaE(lab1, lab2) * 10) / 10;
+      if (de < 10) lowPairs++;
+      pairs.push({ pair: `${roles[i]}/${roles[j]}`, deltaE: de, adequate: de >= 10 });
+    }
+  }
+  const status = lowPairs === 0 ? 'PASS' : lowPairs === 1 ? 'WARN' : 'FAIL';
+  const minDE = Math.min(...pairs.map(p => p.deltaE));
+  return {
+    check: '3.7.10-semantic-color', status, weight: 7,
+    pairs, minDeltaE: minDE, lowPairs,
+    colorsFound: Object.fromEntries(Object.entries(found).map(([k, v]) => [k, `rgb(${v.r},${v.g},${v.b})`]))
+  };
+})()
+```
+
+### 3.7.11 VDQS Aggregator
+
+After running all 10 checks above, compute the composite Visual Design Quality Score:
+
+```
+For each check result:
+  - PASS = full weight points
+  - WARN = 50% of weight points
+  - FAIL = 0 points
+  - SKIP = excluded from denominator
+
+VDQS = (earned points / applicable max points) * 100
+
+Weights: Spacing 15, Rhythm 12, Elevation 8, Whitespace 10, Transition 8,
+         Border-Radius 8, Typographic 12, Cognitive 12, Alignment 8, Semantic Color 7 = 100 total
+
+Grade: A (90-100) | B (75-89) | C (60-74) | D (40-59) | F (<40)
+```
+
+Compute in-context after collecting all 10 results. No separate browser_evaluate call needed —
+aggregate the returned JSON objects from checks 3.7.1–3.7.10.
+
 ---
 
 ## Step 4: Tier 2 — Navigation & Routing
@@ -631,6 +1073,7 @@ Create `.workflow/` directory if needed (via Bash `mkdir -p`). Save to `.workflo
 | T1: Universal | | | | | |
 | T1.5: Accessibility | | | | | |
 | T1.7: Visual & UX | | | | | |
+| T1.8: Design Quality | | | | | |
 | T2: Navigation | | | | | |
 | T3: Responsive | | | | | |
 | T4: Interactive | | | | | |
@@ -659,7 +1102,26 @@ Screenshots saved to `.workflow/screenshots/`:
 | Pinch Zoom | {PASS/FAIL} | {viewport meta content} |
 | 100vh Trap | {PASS/WARN} | {n} elements |
 
-## Quick Wins
+## Visual Design Quality Score: {VDQS}/100 (Grade: {A-F})
+
+### Design System Checks
+| Check | Status | Key Metric | Notes |
+|---|---|---|---|
+| 1.8.1 Spacing Entropy | {status} | {n} unique values, {pct}% on-grid | |
+| 1.8.2 Visual Rhythm | {status} | CV {value} | {n} blocks analyzed |
+| 1.8.3 Elevation Layers | {status} | {n} unique shadows | |
+| 1.8.4 Whitespace Breathing | {status} | {n}/{total} cards out of range | |
+| 1.8.5 Transition Vocabulary | {status} | {n} unique easings | |
+| 1.8.6 Border Radius | {status} | {n} unique values | |
+| 1.8.7 Typographic Scale | {status} | {n} font sizes | |
+| 1.8.8 Cognitive Load Index | {status} | CLI {value} | |
+| 1.8.9 Alignment Grid | {status} | {pct}% aligned | |
+| 1.8.10 Semantic Colors dE | {status} | Min dE {value} | |
+
+### Design Quick Wins
+{Top 3 easiest fixes from WARN/FAIL items — auto-prioritized by weight}
+
+## Visual UX Quick Wins
 {Top 5 easiest visual fixes with highest impact — auto-generated from Tier 1.7 findings.
 Prioritize: contrast fixes, touch target sizing, missing focus styles, font consolidation.}
 
