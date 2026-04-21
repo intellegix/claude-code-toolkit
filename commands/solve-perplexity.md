@@ -89,16 +89,6 @@ PROBLEM_STATE = {
 
 **Output to user**: "Decomposed into {N} sub-questions. Starting iteration loop."
 
-### Step 1.5: Close Browser Bridge Sessions — MANDATORY
-
-**Before launching any Playwright-based query**, close active browser-bridge sessions to prevent DevTools Protocol collisions:
-
-1. Call `mcp__browser-bridge__browser_close_session` to release all browser-bridge tab connections
-2. Wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to fully detach
-3. Then proceed to Step 2
-
-**Why:** The `research_query` and `labs_query` tools launch Playwright (separate Chromium instance). If `browser-bridge` has active Chrome DevTools connections, the two systems can collide — causing tab detachment errors, empty results, and `"Debugger is not attached"` failures. Closing browser-bridge first prevents this.
-
 ### Step 2: Iteration Loop (max 5 iterations)
 
 For each iteration (1 through 5):
@@ -236,13 +226,6 @@ Iteration {N}/{max}: confidence {X}/10 | {Y}/{Z} sub-questions answered | {C} co
 Current hypothesis: {one-line root cause}
 ```
 
-#### 2.8: Browser Cleanup Between Iterations
-
-Before starting the next iteration:
-1. Call `mcp__browser-bridge__browser_close_session`
-2. Wait 2 seconds (`sleep 2` via Bash)
-3. Then proceed to next iteration's query
-
 ### Step 3: Solution Synthesis
 
 After the iteration loop exits, synthesize the final solution. **Output to user:**
@@ -319,8 +302,7 @@ Wait for user selection before proceeding.
 
 ## Error Handling
 
-- **Query fails on iteration 1**: Call `browser_close_session`, wait 2 seconds, retry once. If still fails, suggest `/cache-perplexity-session` to refresh the Perplexity login session.
+- **Query fails on iteration 1**: Retry once. If still fails, suggest `/cache-perplexity-session` to refresh the Perplexity login session.
 - **Query fails on iteration 2+**: Present partial findings from successful iterations as the solution (reduced confidence). Note which iterations succeeded and which failed.
 - **All 5 iterations with confidence < 5**: Warn user that the problem may need a different approach. Suggest `/export-to-council` for multi-model perspective, or escalate to Tier 3 (user handoff) with structured decision request.
-- **Browser collision / empty results**: Close browser-bridge sessions (`browser_close_session`), wait 2 seconds, retry once. If still empty, report "Perplexity session may be expired — run `/cache-perplexity-session` to refresh."
 - **Session expired**: Report "run `/cache-perplexity-session` to refresh Perplexity login session"

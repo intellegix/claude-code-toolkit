@@ -448,20 +448,33 @@ Produce your structured JSON synthesis now."""
             }
 
 
-def save_results(results: dict) -> Path:
-    """Save results to cache and history."""
+def save_results(results: dict, invocation_id: str | None = None) -> Path:
+    """Save results to cache and history.
+
+    Args:
+        invocation_id: Optional per-invocation UUID. When provided, writes to
+            council_<invocation_id>.json in addition to council_latest.json.
+            This prevents concurrent queries from overwriting each other's results.
+    """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Save as latest
+    result_json = json.dumps(results, indent=2, default=str)
+
+    # Save as latest (backward compat — single-query scenarios still work)
     latest_path = CACHE_DIR / "council_latest.json"
-    latest_path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+    latest_path.write_text(result_json, encoding="utf-8")
+
+    # Save per-invocation file (concurrent-safe — each caller reads its own)
+    if invocation_id:
+        inv_path = CACHE_DIR / f"council_{invocation_id}.json"
+        inv_path.write_text(result_json, encoding="utf-8")
 
     # Save timestamped copy
     ts = datetime.now().strftime("%Y-%m-%d_%H%M")
     slug = re.sub(r'[^a-zA-Z0-9_-]', '-', results.get("query", "query")[:40]).strip("-")
     history_path = HISTORY_DIR / f"{ts}-{slug}.json"
-    history_path.write_text(json.dumps(results, indent=2, default=str), encoding="utf-8")
+    history_path.write_text(result_json, encoding="utf-8")
 
     return latest_path
 
@@ -490,9 +503,17 @@ def append_run_log(results: dict) -> None:
         print(f"WARNING: Failed to write run log: {e}", file=sys.stderr)
 
 
-def read_cached(level: str = "synthesis") -> str:
-    """Read cached results at the specified detail level."""
-    latest = CACHE_DIR / "council_latest.json"
+def read_cached(level: str = "synthesis", invocation_id: str | None = None) -> str:
+    """Read cached results at the specified detail level.
+
+    Args:
+        invocation_id: If provided, reads from council_<invocation_id>.json
+            instead of council_latest.json. Used for concurrent query isolation.
+    """
+    if invocation_id:
+        latest = CACHE_DIR / f"council_{invocation_id}.json"
+    else:
+        latest = CACHE_DIR / "council_latest.json"
     if not latest.exists():
         return json.dumps({"error": "No cached council results. Run a query first."})
 
@@ -542,7 +563,7 @@ def read_cached(level: str = "synthesis") -> str:
     return json.dumps({"error": f"Model '{level}' not found in cache. Available: {list(models.keys())}"})
 
 
-async def run_api_query(query: str, context: str) -> dict:
+async def run_api_query(query: str, context: str, invocation_id: str | None = None) -> dict:
     """Execute the full API query pipeline."""
     start = time.time()
     fallback_log: list[dict] = []
@@ -617,7 +638,7 @@ async def run_api_query(query: str, context: str) -> dict:
         "degraded": any(f.get("severity") != "info" for f in fallback_log),
     }
 
-    save_results(results)
+    save_results(results, invocation_id=invocation_id)
     append_run_log(results)
     return results
 
@@ -628,6 +649,7 @@ async def run_browser_query(
     headful: bool | None = None,
     opus_synthesis: bool = False,
     perplexity_mode: str = "council",
+    invocation_id: str | None = None,
 ) -> dict:
     """Execute query via Playwright browser automation against Perplexity UI.
 
@@ -681,7 +703,7 @@ async def run_browser_query(
             "fallback_log": [],
             "degraded": True,
         }
-        save_results(error_results)
+        save_results(error_results, invocation_id=invocation_id)
         append_run_log(error_results)
         return error_results
 
@@ -782,16 +804,16 @@ async def run_browser_query(
         "degraded": len(error_fallbacks) > 0,
     }
 
-    save_results(results)
+    save_results(results, invocation_id=invocation_id)
     append_run_log(results)
     return results
 
 
-async def run_auto_query(query: str, context: str) -> dict:
+async def run_auto_query(query: str, context: str, invocation_id: str | None = None) -> dict:
     """Try API first, fall back to browser on failure."""
     print("Auto mode: trying API first...", file=sys.stderr)
     try:
-        api_result = await run_api_query(query, context)
+        api_result = await run_api_query(query, context, invocation_id=invocation_id)
         # Check if we got any useful responses
         models = api_result.get("models", {})
         has_responses = any(v.get("response") for v in models.values())
@@ -802,7 +824,7 @@ async def run_auto_query(query: str, context: str) -> dict:
     except Exception as e:
         print(f"Auto mode: API failed ({e}), falling back to browser...", file=sys.stderr)
 
-    result = await run_browser_query(query, context)
+    result = await run_browser_query(query, context, invocation_id=invocation_id)
     if result.get("code") == "BROWSER_BUSY":
         print("Auto mode: browser busy (another session holds the lock)", file=sys.stderr)
     return result
@@ -952,6 +974,8 @@ def main() -> None:
         help="Perplexity slash command to use: /council (multi-model), /research (deep research), or /labs (experimental labs)")
     parser.add_argument("--auto-context", action="store_true",
         help="Auto-generate project context from git/CLAUDE.md/MEMORY.md")
+    parser.add_argument("--invocation-id",
+        help="Per-invocation UUID for concurrent query isolation (cache file naming)")
 
     args = parser.parse_args()
 
@@ -998,6 +1022,8 @@ def main() -> None:
         except Exception as e:
             print(f"WARNING: auto-context failed: {e}", file=sys.stderr)
 
+    inv_id = getattr(args, 'invocation_id', None)
+
     if args.mode == "browser":
         # --headful → visible, --headless → hidden, neither → config default
         if args.headful:
@@ -1011,9 +1037,10 @@ def main() -> None:
             headful=headful_val,
             opus_synthesis=args.opus_synthesis,
             perplexity_mode=args.perplexity_mode,
+            invocation_id=inv_id,
         ))
     elif args.mode == "auto":
-        results = asyncio.run(run_auto_query(args.query, context))
+        results = asyncio.run(run_auto_query(args.query, context, invocation_id=inv_id))
     elif args.mode == "direct":
         from council_providers import query_direct_providers
         model_results = asyncio.run(query_direct_providers(ANALYSIS_MODELS, f"{context}\n\n{args.query}" if context else args.query, DIRECT_TIMEOUT))
@@ -1032,10 +1059,10 @@ def main() -> None:
             "fallback_log": fallback_log,
             "degraded": len(fallback_log) > 0,
         }
-        save_results(results)
+        save_results(results, invocation_id=inv_id)
         append_run_log(results)
     else:
-        results = asyncio.run(run_api_query(args.query, context))
+        results = asyncio.run(run_api_query(args.query, context, invocation_id=inv_id))
 
     output = format_synthesis_output(results)
     if not output or not output.strip():

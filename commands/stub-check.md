@@ -57,12 +57,7 @@ Before scanning, auto-detect which languages and frameworks are present. This de
 5. Run `ls -R` or `Glob **/*` (depth-limited) to capture directory tree for grounding
 6. Synthesize internal context — do NOT output to user
 
-### Step 0.5.1: Close Browser Bridge Sessions — MANDATORY
-
-1. Call `mcp__browser-bridge__browser_close_session`
-2. Wait 2 seconds (`sleep 2` via Bash)
-
-### Step 0.5.2: Build Reconnaissance Query
+### Step 0.5.1: Build Reconnaissance Query
 
 Use the MANDATORY CONTEXT PREAMBLE from `/research-perplexity`, then a **grounded** recon prompt:
 
@@ -346,12 +341,7 @@ Move all filtered items to a separate "False Positives Detected" section in the 
 
 Merge Phase 0.5 reconnaissance findings with Phase 1 local scan findings, then send through Perplexity for final depth/brevity validation.
 
-### Step 2.0: Close Browser Bridge Sessions — MANDATORY
-
-1. Call `mcp__browser-bridge__browser_close_session`
-2. Wait 2 seconds (`sleep 2` via Bash)
-
-### Step 2.1: Merge Findings
+### Step 2.0: Merge Findings
 
 Combine both passes using these rules:
 
@@ -557,12 +547,7 @@ Proceeding to automatic fix planning...
 
 **Trigger**: CRITICAL + HIGH finding count >= 1. If count = 0, skip this phase entirely — stop after Phase 4 summary.
 
-### Step 5.0: Close Browser Bridge Sessions — MANDATORY
-
-1. Call `mcp__browser-bridge__browser_close_session`
-2. Wait 2 seconds (`sleep 2` via Bash)
-
-### Step 5.1: Build Fix Research Query
+### Step 5.0: Build Fix Research Query
 
 Compose a fix-focused prompt using ALL CRITICAL and HIGH findings from the Phase 3 report. Include:
 
@@ -637,7 +622,6 @@ After the user approves the plan via `ExitPlanMode`:
 | No source files found | Report "No source files found in {path}" and stop |
 | Grep returns no findings | Report "No completeness gaps detected — codebase looks clean" |
 | Perplexity query fails | Present Phase 1 results only with note "Cross-validation unavailable" |
-| Browser collision / empty results | Close browser-bridge, wait 2s, retry once |
 | Session expired | Report "run `/cache-perplexity-session` to refresh" |
 | Phase 5 skipped (no CRITICAL/HIGH) | Silently skip — present Phase 4 summary only |
 | Fix research query fails | Retry once after 5s; if still fails, report "run `/cache-perplexity-session` to refresh" and stop |

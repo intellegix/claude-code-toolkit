@@ -57,18 +57,6 @@ Please analyze and respond with:
 8. CODEBASE FIT: How do recommendations integrate with existing code structure?
 ```
 
-### Step 1.5: Close Browser Bridge Sessions — MANDATORY
-
-**Before launching any Playwright-based query**, close active browser-bridge sessions to prevent DevTools Protocol collisions:
-
-1. Call `mcp__browser-bridge__browser_close_session` to release all browser-bridge tab connections
-2. Wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to fully detach
-3. Then proceed to Step 2
-
-**Why:** The `council_query` tool launches Playwright (separate Chromium instance). If `browser-bridge` has active Chrome DevTools connections, the two systems can collide — causing tab detachment errors, empty results, and `"Debugger is not attached"` failures. Closing browser-bridge first prevents this.
-
-**After Step 3 (Read synthesis):** Browser-bridge connections can be re-established by calling any `browser-bridge` tool — no explicit reconnect needed.
-
 ### Step 2: Run council query (auto mode)
 
 Call `council_query` MCP tool with:
@@ -176,4 +164,4 @@ After the user approves the plan:
 - **Session expired (browser)**: Report "run python council_browser.py --save-session to refresh"
 - **Model timeout**: Individual model failures don't block others (parallel execution)
 - **Synthesis failure**: Still returns individual model responses via `council_read --read-full`
-- **Browser collision / empty results**: If `council_query` returns empty synthesis, the most likely cause is browser-bridge DevTools collision. Close browser-bridge sessions (`browser_close_session`), wait 2 seconds, and retry once. If still empty, report "Perplexity session may be expired — run `/cache-perplexity-session` to refresh."
+- **Empty results**: If `council_query` returns empty synthesis, retry once. If still empty, report "Perplexity session may be expired — run `/cache-perplexity-session` to refresh."

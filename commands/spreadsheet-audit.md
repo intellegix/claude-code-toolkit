@@ -2,7 +2,7 @@
 
 Perform a 6-step audit of an Excel spreadsheet for formula correctness, formatting consistency, data integrity, and spec compliance. Uses the `excel-screenshot` MCP server tools — no Excel installation required.
 
-**Architecture**: Validate → Discover → Load Specs → Deep Audit (4 categories) → Visual Verify → Report. $0 cost, fully local.
+**Architecture**: Validate → Discover → Load Specs → Deep Audit (4 categories) → Visual Verify → Report. Free, fully local.
 
 **CRITICAL: Execute the full audit silently and present results at the end. Only interact with the user in Step 0 (file selection) and Step 2 (spec clarification if no specs found).**
 
@@ -11,20 +11,20 @@ Perform a 6-step audit of an Excel spreadsheet for formula correctness, formatti
 `$ARGUMENTS` = path to `.xlsx` file (required), optionally followed by sheet name(s) or `--focus` flag.
 
 Examples:
-- `/spreadsheet-audit "C:\path\to\budget.xlsx"`
-- `/spreadsheet-audit "C:\path\to\report.xlsx" Sheet1`
-- `/spreadsheet-audit "C:\path\to\data.xlsx" --focus formulas`
+- /spreadsheet-audit "C:\path\to\budget.xlsx"
+- /spreadsheet-audit "C:\path\to\report.xlsx" Sheet1
+- /spreadsheet-audit "C:\path\to\data.xlsx" --focus formulas
 
 ---
 
 ## Step 0: Validate Input — MANDATORY, SILENT
 
 1. Parse `$ARGUMENTS` for file path (first argument = file path, remaining = sheet names or `--focus` flag)
-2. If no path provided: `Glob` for `**/*.xlsx` in working directory
+2. If no path provided: `Glob` for **/*.xlsx in working directory
    - If exactly 1 found → use it (confirm with user)
    - If 0 found → STOP: "No .xlsx files found. Provide a path."
    - If 2+ found → use `AskUserQuestion` to ask user to pick one (list all found)
-3. Verify file exists and is readable by calling `spreadsheet_list_sheets(file_path)`
+3. Verify file exists and is readable by calling spreadsheet_list_sheets(file_path)
 4. If file is locked (PermissionError): report "Close Excel first, then retry"
 5. If file is password-protected (InvalidFileException): STOP: "File is password-protected. Remove protection first."
 
@@ -32,9 +32,9 @@ Examples:
 
 ## Step 1: Discover Spreadsheet Structure — SILENT
 
-1. `spreadsheet_list_sheets(file_path)` → get all sheet names + dimensions
+1. spreadsheet_list_sheets(file_path) → get all sheet names + dimensions
 2. For each sheet:
-   - `spreadsheet_get_structure(file_path, sheet_name)` → merged cells, column widths, row heights, freeze panes
+   - spreadsheet_get_structure(file_path, sheet_name) → merged cells, column widths, row heights, freeze panes
 3. Build a structural summary (skip sheets with 0 data rows — note them as "empty"):
    ```
    File: budget.xlsx
@@ -52,13 +52,13 @@ Examples:
 ## Step 2: Load Spec Constraints
 
 Search for specs in priority order:
-1. Check **project-level** CLAUDE.md for `## Excel Specs` or `## Spreadsheet` section
-2. Check **global** CLAUDE.md (`~/.claude/CLAUDE.md`) for the same sections
-3. `Glob` for `spreadsheet-spec.md`, `excel-spec.md`, or `*-spec.md` in the working directory
+1. Check **project-level** CLAUDE.md for **## Excel Specs** or **## Spreadsheet** section
+2. Check **global** CLAUDE.md (~/.claude/CLAUDE.md) for the same sections
+3. `Glob` for `spreadsheet-spec.md`, `excel-spec.md`, or *-spec.md in the working directory
 4. If specs found, parse for these constraint types:
    - **sheets**: Required sheet names (list)
    - **columns**: Expected column headers per sheet, with optional type annotation (currency, percentage, date, text, formula)
-   - **formats**: Required number formats per column type (e.g., currency → `$#,##0.00`)
+   - **formats**: Required number formats per column type (e.g., currency → $#,##0.00)
    - **formulas**: Expected formula patterns per column (e.g., "Column H = SUM of B:G for each row")
    - **row_range**: Expected data row count or range (e.g., "12 monthly rows")
    - **style**: Formatting rules (headers bold, font size, fill colors)
@@ -78,7 +78,7 @@ Search for specs in priority order:
 **Standard business format defaults** (option A):
 - Row 1 = headers: bold, background fill, centered
 - Number columns: consistent decimal places within a column
-- Currency columns: `$#,##0.00` or similar currency format
+- Currency columns: $#,##0.00 or similar currency format
 - Percentage columns: `0.00%` format
 - Date columns: consistent date format (mm/dd/yyyy or yyyy-mm-dd)
 - Last row of numeric sections: SUM formula or total indicator
@@ -96,23 +96,23 @@ For each sheet (filtered by $ARGUMENTS or all):
 ### 3A: Formula Validation
 
 Read full sheet data with formulas:
-`spreadsheet_read_range(file_path, sheet_name, used_range, include_formatting=False)` — get values + formulas
+spreadsheet_read_range(file_path, sheet_name, used_range, include_formatting=False) — get values + formulas
 
-**Core technique — Formula Normalization**: For each formula in a column, replace relative row numbers with `{R}` placeholders (e.g., `=SUM(B5:G5)` → `=SUM(B{R}:G{R})`). The most common normalized pattern in a column is the "expected" pattern. Any cell that deviates is flagged.
+**Core technique — Formula Normalization**: For each formula in a column, replace relative row numbers with {R} placeholders (e.g., =SUM(B5:G5) → =SUM(B{R}:G{R})). The most common normalized pattern in a column is the "expected" pattern. Any cell that deviates is flagged.
 
 **Pre-classification**: Before normalizing, classify each formula into one of these types:
-- **Relative**: Standard row-relative formulas → apply `{R}` normalization
-- **Absolute-anchor**: Contains `$` row locks like `$B$1` → do NOT replace locked row numbers, only relative ones
+- **Relative**: Standard row-relative formulas → apply {R} normalization
+- **Absolute-anchor**: Contains **$** dollar-sign locks on rows and columns (absolute references) → do NOT replace locked row numbers, only relative ones
 - **Named range**: References named ranges (no cell addresses) → skip normalization, treat as its own pattern class
-- **Structured table**: Uses `[@Column]` syntax → skip normalization, treat as its own pattern class
+- **Structured table**: Uses [@Column] syntax → skip normalization, treat as its own pattern class
 - **Dynamic**: Contains INDIRECT, OFFSET, or INDEX → flag as [INFO] "dynamic formula — manual review recommended", do not pattern-match
 
 Check for:
 1. **Hardcoded values in formula columns** — Per-column check: if a column's majority (>60%) cells contain formulas, flag any cell in that column with a raw literal value as "potential hardcoded override" [WARNING]. Columns that are 100% literal values are normal data columns — skip them entirely.
-2. **Broken formula patterns** — After normalizing formulas (row→`{R}`), find the majority pattern per column via counting. Flag any formula that doesn't match the majority as "formula inconsistency" [WARNING]. If only 1 cell out of 20+ deviates, flag as [INFO] (likely intentional override).
+2. **Broken formula patterns** — After normalizing formulas (row→{R}), find the majority pattern per column via counting. Flag any formula that doesn't match the majority as "formula inconsistency" [WARNING]. If only 1 cell out of 20+ deviates, flag as [INFO] (likely intentional override).
 3. **Skipped row references** — If a formula in row N references cells in row M (where M != N and the column pattern is self-referential), flag as "formula references wrong row" [CRITICAL]. Parse cell references from formulas and compare to the cell's own row.
 4. **Missing totals** — If a numeric column has 3+ data rows but no SUM/AVERAGE/COUNT in the last row or a row labeled "Total", flag as "missing summary formula" [INFO].
-5. **Cross-sheet reference integrity** — Extract sheet names from formulas using regex for `'SheetName'!` references. Verify those sheets exist in the workbook. Flag broken references as [CRITICAL].
+5. **Cross-sheet reference integrity** — Extract sheet names from formulas using regex for 'SheetName'! references. Verify those sheets exist in the workbook. Flag broken references as [CRITICAL].
 6. **Arithmetic neighbor check** — For cells with raw numeric values in data regions with 5+ consecutive rows: check if the value equals the sum, difference, or product of its immediate left/right/above neighbors. If it does, suggest it should be a formula [INFO]. Only flag when the arithmetic match is exact (within 0.001 tolerance). Skip date columns and section header/subtotal rows.
 
 For each finding, record: sheet, cell, issue, severity, current value, expected pattern.
@@ -120,13 +120,13 @@ For each finding, record: sheet, cell, issue, severity, current value, expected 
 ### 3B: Formatting Consistency
 
 Read formatting data:
-`spreadsheet_read_range(file_path, sheet_name, used_range, include_formatting=True)` — get formatting
+spreadsheet_read_range(file_path, sheet_name, used_range, include_formatting=True) — get formatting
 
 **Core technique — Majority Format Detection**: For each formatting property per column, count occurrences of each distinct value. The most common value is the "expected" format. Any cell deviating from the majority is flagged. This avoids hardcoding format expectations.
 
 Check for:
 1. **Header row consistency** — All cells in row 1 (or the detected header row) should share: same font size, same bold state, same fill color, same alignment. Flag any header cell that breaks the pattern [WARNING].
-2. **Column number_format consistency** — Within each column's data cells, `number_format` should be uniform. Use counting: collect all formats in a column, flag any cell whose format differs from the majority [WARNING]. Common smells: mixing `$0.00` with plain `0.00`, or `0%` with `0.00%` in the same column.
+2. **Column number_format consistency** — Within each column's data cells, `number_format` should be uniform. Use counting: collect all formats in a column, flag any cell whose format differs from the majority [WARNING]. Common smells: mixing currency format with plain `0.00`, or `0%` with `0.00%` in the same column.
 3. **Font size consistency** — Data cells (rows 2+) should share the same `font_size`. Allow headers to differ. Flag outliers [INFO].
 4. **Alignment consistency** — Check per column: numeric columns should be consistently aligned (usually right), text columns left. Flag mixed alignment within a column [INFO].
 5. **Border consistency** — If borders are used anywhere on the sheet, check for pattern: all data cells should have matching border styles. Missing borders in an otherwise bordered region are flagged [INFO].
@@ -157,7 +157,7 @@ Using specs from Step 2:
 2. **Column headers match** — Expected headers appear in the correct positions. Missing header = [CRITICAL]. Wrong order = [WARNING]. Extra unlisted columns = [INFO].
 3. **Row count within range** — Data rows match expected count (within 10% tolerance unless spec says exact). Out of range = [WARNING].
 4. **Number formats match spec** — Currency/percentage/date columns use the specified format. Wrong format = [WARNING].
-5. **Formula patterns match** — Specified formula columns use the expected formula type. Use formula normalization (row→`{R}`) to compare against spec pattern. Mismatch = [CRITICAL].
+5. **Formula patterns match** — Specified formula columns use the expected formula type. Use formula normalization (row→{R}) to compare against spec pattern. Mismatch = [CRITICAL].
 6. **Style rules match** — If spec defines header style (bold, fill color, font size), verify. Mismatch = [WARNING].
 7. **Custom rules** — Any additional user-specified constraints from the spec.
 
@@ -171,7 +171,7 @@ For each sheet with findings:
 1. **Targeted screenshots only** — Don't screenshot the entire sheet. Instead:
    - Screenshot the header row area (row 1 + first 3 data rows) for every audited sheet
    - For each finding cluster, screenshot the specific range containing the issue (plus 2 rows/cols for context)
-   - Use `spreadsheet_screenshot(file_path, sheet_name, range, scale=2.0)` → render PNG to a temp path
+   - Use spreadsheet_screenshot(file_path, sheet_name, range, scale=2.0) → render PNG to a temp path
 2. `Read` the screenshot (multimodal) — describe what is visually apparent:
    - Are headers visually distinct from data?
    - Do number columns look consistently formatted?
@@ -214,7 +214,7 @@ For each sheet with findings:
 
 ### 5B: Detailed Report File
 
-Save to `{working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md` (timestamp ensures no conflicts on re-runs):
+Save to {working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md (timestamp ensures no conflicts on re-runs):
 
 ```markdown
 # Spreadsheet Audit Report
@@ -260,10 +260,10 @@ Save to `{working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md` (timestamp e
 
 | Tool | Purpose |
 |------|---------|
-| `spreadsheet_list_sheets(file_path)` | Sheet enumeration + dimensions |
-| `spreadsheet_get_structure(file_path, sheet_name)` | Merged cells, column widths, freeze panes |
-| `spreadsheet_read_range(file_path, sheet_name, range, include_formatting)` | Values + formulas + formatting (2D arrays) |
-| `spreadsheet_screenshot(file_path, sheet_name, range, save_path, scale)` | Visual PNG rendering — **always use scale=2.0** |
+| spreadsheet_list_sheets(file_path) | Sheet enumeration + dimensions |
+| spreadsheet_get_structure(file_path, sheet_name) | Merged cells, column widths, freeze panes |
+| spreadsheet_read_range(file_path, sheet_name, range, include_formatting) | Values + formulas + formatting (2D arrays) |
+| spreadsheet_screenshot(file_path, sheet_name, range, save_path, scale) | Visual PNG rendering — **always use scale=2.0** |
 
 ---
 
@@ -283,9 +283,9 @@ Save to `{working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md` (timestamp e
 
 ## Key Techniques Reference
 
-1. **Formula normalization**: Replace RELATIVE row numbers only with `{R}` — preserve absolute refs like `$B$1`. Pre-classify formulas into: relative, absolute-anchor, named-range, structured-table, dynamic (INDIRECT/OFFSET).
+1. **Formula normalization**: Replace RELATIVE row numbers only with {R} — preserve absolute refs (dollar-sign locks on rows and columns). Pre-classify formulas into: relative, absolute-anchor, named-range, structured-table, dynamic (INDIRECT/OFFSET).
 2. **Skipped row detection**: Parse cell references from formulas. If a formula in row 10 references row 8, it's likely a copy-paste error.
-3. **Cross-sheet regex**: Look for patterns like `'SheetName'!` or `SheetName!` in formulas to extract referenced sheet names.
+3. **Cross-sheet regex**: Look for patterns like 'SheetName'! or SheetName! in formulas to extract referenced sheet names.
 4. **Arithmetic neighbor check**: Scope to data regions with 5+ consecutive rows. Skip date columns and section headers/subtotals. Test sum, difference, product of immediate neighbors.
 5. **Counter-based majority detection**: For both formulas and formatting properties, the majority value in a column IS the expected value. Minority values are the findings.
 6. **Merged cell boundary**: Data start row is the boundary. Merges above = OK, merges at/below = INFO-level note.

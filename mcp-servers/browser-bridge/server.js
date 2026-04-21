@@ -22,7 +22,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocket } from 'ws';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { basename, dirname, join, resolve as pathResolve } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync, execFile } from 'node:child_process';
@@ -38,6 +38,7 @@ import { startHealthServer } from './lib/health-server.js';
 import { MetricsCollector } from './lib/metrics.js';
 
 _debugLog(`imports OK — cwd=${process.cwd()} argv=${process.argv.join(' ')} ppid=${process.ppid}`);
+_debugLog('[council-mcp] build=2026-04-21T10');
 
 const rateLimiter = new RateLimiter(60, 1);
 
@@ -893,7 +894,13 @@ class BrowserBridgeServer {
         // Ensure cache dir exists
         mkdirSync(cacheDir, { recursive: true });
 
-        // Generate session context if requested
+        // Generate session context if requested — use per-invocation UUID file
+        // to prevent concurrent queries from overwriting each other's context.
+        const invocationId = randomUUID().slice(0, 8);
+        const queryType = isLabs ? 'labs' : isResearch ? 'research' : 'council';
+        const startMs = Date.now();
+        log.info('query_start', { invocationId, queryType, mode, queryLen: query.length });
+        const ctxFile = join(cacheDir, `session_context_${invocationId}.md`);
         if (includeContext) {
           try {
             const ctxOut = execFileSync('python', [join(scriptDir, 'session_context.py'), process.cwd()], {
@@ -901,7 +908,7 @@ class BrowserBridgeServer {
               encoding: 'utf-8',
               env: pythonEnv,
             });
-            writeFileSync(join(cacheDir, 'session_context.md'), ctxOut, 'utf-8');
+            writeFileSync(ctxFile, ctxOut, 'utf-8');
           } catch (ctxErr) {
             log.warn('council_context_failed', { error: ctxErr.message });
             // Non-fatal — query will proceed without context
@@ -909,8 +916,10 @@ class BrowserBridgeServer {
         }
 
         const scriptArgs = [join(scriptDir, 'council_query.py'), '--mode', mode];
-        if (includeContext && existsSync(join(cacheDir, 'session_context.md'))) {
-          scriptArgs.push('--context-file', join(cacheDir, 'session_context.md'));
+        // Pass invocation ID for concurrent query isolation (cache file naming)
+        scriptArgs.push('--invocation-id', invocationId);
+        if (includeContext && existsSync(ctxFile)) {
+          scriptArgs.push('--context-file', ctxFile);
         }
         const headful = Validator.boolean(args.headful);
         const opusSynthesis = Validator.boolean(args.opusSynthesis);
@@ -922,36 +931,47 @@ class BrowserBridgeServer {
 
         // Browser/auto modes need longer timeout; research/labs modes need even more
         const timeout = isLabs ? CONFIG.timeouts.councilLabs : isResearch ? CONFIG.timeouts.councilResearch : (mode === 'browser' || mode === 'auto') ? CONFIG.timeouts.councilBrowser : CONFIG.timeouts.councilApi;
-        let raw = await execFileAsync('python', scriptArgs, {
-          timeout,
-          encoding: 'utf-8',
-          env: pythonEnv,
-          cwd: scriptDir,
-        });
-        let result = raw.stdout;
-        // Check for browser busy error (concurrent session holding the profile lock)
-        if (result.includes('BROWSER_BUSY')) {
-          return {
-            error: 'Another browser council/research session is active. Wait ~2 min or use --mode api.',
-            code: 'BROWSER_BUSY',
-          };
-        }
-        // Retry once if stdout is empty (Bug 3: empty synthesis)
-        if (!result || !result.trim()) {
-          log.warn('research_empty_result', { stderr: (raw.stderr || '').substring(0, 500) });
-          await new Promise(r => setTimeout(r, 3000));
-          raw = await execFileAsync('python', scriptArgs, {
+        // Cleanup helper for per-invocation context file
+        const cleanupCtx = () => { try { if (existsSync(ctxFile)) unlinkSync(ctxFile); } catch {} };
+        try {
+          let raw = await execFileAsync('python', scriptArgs, {
             timeout,
             encoding: 'utf-8',
             env: pythonEnv,
             cwd: scriptDir,
           });
-          result = raw.stdout;
-          if (!result || !result.trim()) {
-            log.warn('research_empty_result_retry', { stderr: (raw.stderr || '').substring(0, 500) });
+          let result = raw.stdout;
+          // Check for browser busy error (concurrent session holding the profile lock)
+          if (result.includes('BROWSER_BUSY')) {
+            log.warn('query_browser_busy', { invocationId, queryType, elapsedMs: Date.now() - startMs });
+            return {
+              error: 'Another browser council/research session is active. Wait ~2 min or use --mode api.',
+              code: 'BROWSER_BUSY',
+            };
           }
+          // Retry once if stdout is empty (Bug 3: empty synthesis)
+          if (!result || !result.trim()) {
+            log.warn('research_empty_result', { stderr: (raw.stderr || '').substring(0, 500) });
+            await new Promise(r => setTimeout(r, 3000));
+            raw = await execFileAsync('python', scriptArgs, {
+              timeout,
+              encoding: 'utf-8',
+              env: pythonEnv,
+              cwd: scriptDir,
+            });
+            result = raw.stdout;
+            if (!result || !result.trim()) {
+              log.warn('research_empty_result_retry', { stderr: (raw.stderr || '').substring(0, 500) });
+            }
+          }
+          log.info('query_success', { invocationId, queryType, resultLen: (result || '').length, elapsedMs: Date.now() - startMs });
+          return { synthesis: result };
+        } catch (queryErr) {
+          log.error('query_error', { invocationId, queryType, error: queryErr.message, stderr: (queryErr.stderr || '').substring(0, 300), elapsedMs: Date.now() - startMs });
+          throw queryErr;
+        } finally {
+          cleanupCtx();
         }
-        return { synthesis: result };
       }
 
       case 'council_metrics': {
@@ -1002,39 +1022,22 @@ class BrowserBridgeServer {
           prose: '.prose',
         };
 
-        // Step A: Find or navigate to perplexity.ai tab
+        // Step A: Always navigate a fresh tab to perplexity.ai to avoid
+        // concurrent calls stomping on the same tab's navigation/state.
         if (!tabId) {
-          const tabsResult = await this.bridge.broadcast(
-            { type: 'get_tabs', payload: this._withSession({}) },
-            CONFIG.timeouts.quick,
+          const navResult = await this.bridge.broadcast(
+            { type: 'navigate', payload: this._withSession({ url: 'https://www.perplexity.ai/' }) },
+            CONFIG.requestTimeout,
           );
-          const tabs = tabsResult.tabs || tabsResult;
-          const pplxTab = (Array.isArray(tabs) ? tabs : []).find(
-            (t) => t.url && t.url.includes('perplexity.ai') && !t.url.includes('/search/'),
+          tabId = navResult.tabId || tabId;
+          // Wait for input to be ready
+          await this.bridge.broadcast(
+            {
+              type: 'action_request',
+              payload: this._withSession({ action: 'waitForElement', selector: SEL.input, timeout: 10_000, tabId }),
+            },
+            12_000,
           );
-          if (pplxTab) {
-            tabId = pplxTab.id;
-            // Switch to the tab
-            await this.bridge.broadcast(
-              { type: 'switch_tab', payload: this._withSession({ tabId }) },
-              CONFIG.timeouts.quick,
-            );
-          } else {
-            // Navigate a new or existing tab to perplexity.ai
-            const navResult = await this.bridge.broadcast(
-              { type: 'navigate', payload: this._withSession({ url: 'https://www.perplexity.ai/' }) },
-              CONFIG.requestTimeout,
-            );
-            tabId = navResult.tabId || tabId;
-            // Wait for input to be ready
-            await this.bridge.broadcast(
-              {
-                type: 'action_request',
-                payload: this._withSession({ action: 'waitForElement', selector: SEL.input, timeout: 10_000, tabId }),
-              },
-              12_000,
-            );
-          }
         }
 
         // Step B: If mode is research or labs, type the slash command first

@@ -291,12 +291,7 @@ The loop agent's CLAUDE.md is its entire world — every instruction, phase, acc
 criterion, and gotcha must be in there. Writing it from shallow context produces vague
 instructions that cause the loop to spin. Research ensures comprehensive, precise instructions.
 
-#### 3.5.1: Close Browser Bridge Sessions
-
-Call `mcp__browser-bridge__browser_close_session` to release browser-bridge tab connections,
-then wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to detach.
-
-#### 3.5.2: Build the Research Query
+#### 3.5.1: Build the Research Query
 
 Compile everything gathered so far into a research query. The query MUST include:
 
@@ -356,18 +351,16 @@ Please provide:
 6. PHASE DEPENDENCIES: Which phases block which — can any run independently?
 ```
 
-#### 3.5.3: Run Research
+#### 3.5.2: Run Research
 
-Invoke `/research-perplexity` via the `Skill` tool with the query from 3.5.2.
+Invoke `/research-perplexity` via the `Skill` tool with the query from 3.5.1.
 
 **If `/research-perplexity` fails:**
-1. Close browser-bridge sessions (`browser_close_session`)
-2. Wait 30 seconds for cleanup
-3. Retry once
-4. If retry also fails: proceed to Step 4 using only the context from Steps 0-3, but note
+1. Retry once
+2. If retry also fails: proceed to Step 4 using only the context from Steps 0-3, but note
    in CLAUDE.md: `<!-- WARNING: Research step failed — instructions may be incomplete -->`
 
-#### 3.5.4: Synthesize Research into Instruction Plan
+#### 3.5.3: Synthesize Research into Instruction Plan
 
 From the research results, extract:
 - Ordered phase list with concrete file paths and acceptance criteria

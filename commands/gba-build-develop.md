@@ -118,11 +118,7 @@ Proceed directly to Stage 1. Do NOT ask the user questions.
 
 **Goal:** Use `/research-perplexity` patterns to determine architecture and module breakdown.
 
-1. **Close browser-bridge sessions** to prevent DevTools collision:
-   - Call `mcp__browser-bridge__browser_close_session`
-   - Wait 2 seconds (`sleep 2`)
-
-2. **Build research query** using compiled context from Stage 0:
+1. **Build research query** using compiled context from Stage 0:
 
    ```
    You are a GBA game architecture advisor. Design the complete technical architecture
@@ -294,9 +290,7 @@ Proceed to Stage 4.
 
 **Goal:** Feed AI playtest results into `/research-perplexity` for analysis and next-step recommendations.
 
-1. **Close browser-bridge sessions** (same protocol as Stage 1).
-
-2. **Build iteration query** with test results:
+1. **Build iteration query** with test results:
 
    ```
    Given this GBA game build progress and test results:
@@ -335,7 +329,7 @@ Only enter this stage when all core modules pass AI playtest.
 
 #### Stage 5.1: GBA Creative Ideation (Query 1/3)
 
-Close browser-bridge sessions, then query:
+Query:
 
 ```
 You are an innovation consultant specializing in GBA game development. The game is:
@@ -826,7 +820,7 @@ Focus: novel GBA-specific features, visual polish, audio tricks, hardware exploi
 | 5 | All creative ideas NOT_VIABLE | Log results, skip feature additions, proceed to Stage 6. |
 | 6 | Full playthrough fails | Report where it failed, suggest manual debugging. |
 | 6 | Production audit finds issues | List all issues, fix them, re-run audit. |
-| ANY | Browser-bridge collision / empty results | Close browser-bridge, wait 2s, retry once. If still empty, suggest `/cache-perplexity-session`. |
+| ANY | Empty research results | Retry once. If still empty, suggest `/cache-perplexity-session`. |
 
 ---
 

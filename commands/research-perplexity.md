@@ -71,18 +71,6 @@ Please analyze and respond with:
 8. CODEBASE FIT: How do recommendations integrate with existing code structure?
 ```
 
-### Step 1.5: Close Browser Bridge Sessions — MANDATORY
-
-**Before launching any Playwright-based query**, close active browser-bridge sessions to prevent DevTools Protocol collisions:
-
-1. Call `mcp__browser-bridge__browser_close_session` to release all browser-bridge tab connections
-2. Wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to fully detach
-3. Then proceed to Step 2
-
-**Why:** The `research_query` tool launches Playwright (separate Chromium instance). If `browser-bridge` has active Chrome DevTools connections, the two systems can collide — causing tab detachment errors, empty results, and `"Debugger is not attached"` failures. Closing browser-bridge first prevents this.
-
-**After Step 3 (Read results):** Browser-bridge connections can be re-established by calling any `browser-bridge` tool — no explicit reconnect needed.
-
 ### Step 2: Run research query
 
 Call `research_query` MCP tool with:
@@ -143,14 +131,7 @@ Write the full plan (master + all sub-plans), then proceed to **Step 6** — do 
 
 **This step is the hard gate before `ExitPlanMode`. NEVER skip it. NEVER call `ExitPlanMode` without completing this step. Skipping verification is a protocol violation — it applies regardless of plan size, complexity, or apparent correctness.**
 
-#### 6.1: Close Browser Bridge Sessions
-
-Same as Step 1.5 — close active browser-bridge sessions before launching Playwright:
-
-1. Call `mcp__browser-bridge__browser_close_session`
-2. Wait 2 seconds (`sleep 2` via Bash)
-
-#### 6.2: Build the Verification Query
+#### 6.1: Build the Verification Query
 
 Construct a critique-focused query containing:
 
@@ -187,28 +168,26 @@ Please evaluate:
 8. VERDICT: APPROVED (proceed as-is) or REVISE (with specific changes needed)
 ```
 
-#### 6.3: Run Verification
+#### 6.2: Run Verification
 
 Call `research_query` MCP tool with:
 - `query`: The critique prompt from 6.2
 - `includeContext`: `true`
 
-#### 6.4: Revise Plan (if needed)
+#### 6.3: Revise Plan (if needed)
 
 - If the critique identifies issues: revise the plan accordingly. **Maximum 1 revision pass** — do not re-verify after revision.
 - If the critique returns APPROVED: proceed as-is.
 
-#### 6.5: Exit Plan Mode
+#### 6.4: Exit Plan Mode
 
-**Only after completing 6.1–6.4**, call `ExitPlanMode` for user approval.
+**Only after completing 6.1–6.3**, call `ExitPlanMode` for user approval.
 
 #### Error Handling for Step 6
 
 If `research_query` fails in Step 6:
-1. Close browser-bridge sessions (`browser_close_session`)
-2. Wait 30 seconds for process cleanup
-3. Retry once
-4. If the retry also fails: note the failure reason in the plan file, then proceed to `ExitPlanMode` — but the attempt MUST be made
+1. Retry once
+2. If the retry also fails: note the failure reason in the plan file, then proceed to `ExitPlanMode` — but the attempt MUST be made
 
 ### Step 7: Post-Approval Execution
 
@@ -228,4 +207,4 @@ After the user approves the plan:
 ## Error Handling
 - **Session expired**: Report "run python council_browser.py --save-session to refresh"
 - **Research mode not available**: Falls back to regular Perplexity query
-- **Browser collision / empty results**: If `research_query` returns empty synthesis, the most likely cause is browser-bridge DevTools collision. Close browser-bridge sessions (`browser_close_session`), wait 2 seconds, and retry once. If still empty, report "Perplexity session may be expired — run `/cache-perplexity-session` to refresh."
+- **Empty results**: If `research_query` returns empty synthesis, retry once. If still empty, report "Perplexity session may be expired — run `/cache-perplexity-session` to refresh."

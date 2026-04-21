@@ -278,12 +278,7 @@ Each agent's CLAUDE.md is its entire world — every instruction, phase, accepta
 territory rule, and gotcha must be in there. Writing from shallow context produces vague
 instructions that cause agents to spin or violate territory boundaries.
 
-#### 4.5.1: Close Browser Bridge Sessions
-
-Call `mcp__browser-bridge__browser_close_session` to release browser-bridge tab connections,
-then wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to detach.
-
-#### 4.5.2: Build the Research Query
+#### 4.5.1: Build the Research Query
 
 Compile the full orchestration context into a single research query:
 
@@ -336,18 +331,16 @@ For EACH agent, please provide:
    do to minimize merge friction (e.g., append-only patterns, avoiding shared constants)?
 ```
 
-#### 4.5.3: Run Research
+#### 4.5.2: Run Research
 
-Invoke `/research-perplexity` via the `Skill` tool with the query from 4.5.2.
+Invoke `/research-perplexity` via the `Skill` tool with the query from 4.5.1.
 
 **If `/research-perplexity` fails:**
-1. Close browser-bridge sessions (`browser_close_session`)
-2. Wait 30 seconds for cleanup
-3. Retry once
-4. If retry also fails: proceed to Step 5 using only context from Steps 1-4, but add to
+1. Retry once
+2. If retry also fails: proceed to Step 5 using only context from Steps 1-4, but add to
    each agent's CLAUDE.md: `<!-- WARNING: Research step failed — instructions may be incomplete -->`
 
-#### 4.5.4: Synthesize Research into Per-Agent Plans
+#### 4.5.3: Synthesize Research into Per-Agent Plans
 
 From the research results, extract per-agent:
 - Ordered phase list with concrete file paths and acceptance criteria

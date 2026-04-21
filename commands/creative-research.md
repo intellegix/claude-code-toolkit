@@ -35,16 +35,6 @@ After compiling session context (Step 0), explore the actual codebase:
 
 Do NOT present findings. Do NOT ask questions. Proceed directly to Step 1.
 
-### Step 1: Close Browser Bridge Sessions — MANDATORY
-
-**Before launching any Playwright-based query**, close active browser-bridge sessions to prevent DevTools Protocol collisions:
-
-1. Call `mcp__browser-bridge__browser_close_session` to release all browser-bridge tab connections
-2. Wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to fully detach
-3. Then proceed to Stage 1
-
-**Why:** The `research_query` tool launches Playwright. If `browser-bridge` has active Chrome DevTools connections, the two systems collide — causing tab detachment errors, empty results, and `"Debugger is not attached"` failures.
-
 ---
 
 ## Stage 1: Creative Ideation (Query 1/3)
@@ -248,7 +238,6 @@ For each TOP 5 feature, show:
 | Stage 1 fails (both attempts) | STOP — report error, suggest `/cache-perplexity-session` |
 | Stage 2 fails (both attempts) | Present Stage 1 as partial results, skip to Step 4 |
 | Stage 3 fails (both attempts) | Present Stage 1 + 2, skip blueprints in Step 4 |
-| Browser collision / empty results | Close browser-bridge, wait 2s, retry once |
 | Session expired | Report "run `/cache-perplexity-session` to refresh" |
 
 ## Key Differences from Other Research Commands

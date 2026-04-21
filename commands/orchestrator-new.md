@@ -117,12 +117,7 @@ mkdir -p src docs .workflow
 **This is the critical intelligence-gathering phase. Two mandatory Perplexity passes —
 one for design, one for adversarial critique.**
 
-### Step 1: Close Browser Bridge Sessions
-
-Call `mcp__browser-bridge__browser_close_session` to release browser-bridge tab connections,
-then wait 2 seconds (`sleep 2` via Bash) for Chrome DevTools to detach.
-
-### Step 2: Research Pass 1 — Stack & Structure
+### Step 1: Research Pass 1 — Stack & Structure
 
 Build the research query. If `--stack` was provided, reframe the stack section as validation
 rather than selection ("Given that I'm using {stack}, what is the optimal structure?").
@@ -201,9 +196,9 @@ internal use; you need the raw architectural recommendations.
 
 **Wait for Pass 1 to complete before proceeding to Pass 2.**
 
-### Step 3: Research Pass 2 — Adversarial Critique
+### Step 2: Research Pass 2 — Adversarial Critique
 
-Close browser-bridge sessions again, wait 2 seconds, then run a second query:
+Run a second query:
 
 ```
 [ENVIRONMENT CONTEXT — READ FIRST]
@@ -238,7 +233,7 @@ ADVERSARIAL CRITIQUE — Challenge this recommendation:
    the same structure (title, files, effort, parallelizable, acceptance criteria).
 ```
 
-### Step 4: Persist Research Findings
+### Step 3: Persist Research Findings
 
 Write both pass results to `docs/RESEARCH_FINDINGS.md`:
 
@@ -266,10 +261,8 @@ git add docs/RESEARCH_FINDINGS.md && git commit -m "docs: architecture research 
 ### Error Handling for Phase B
 
 If either research pass fails:
-1. Close browser-bridge sessions
-2. Wait 30 seconds for cleanup
-3. Retry once
-4. If retry fails: proceed with whatever results were obtained. If Pass 1 failed entirely,
+1. Retry once
+2. If retry fails: proceed with whatever results were obtained. If Pass 1 failed entirely,
    STOP — "Architecture research failed. Check Perplexity session (`/cache-perplexity-session`).
    Cannot generate blueprint without research."
 
