@@ -1,8 +1,10 @@
 # /spreadsheet-audit — Comprehensive Excel Spreadsheet Audit
 
-Perform a 6-step audit of an Excel spreadsheet for formula correctness, formatting consistency, data integrity, and spec compliance. Uses the `excel-screenshot` MCP server tools — no Excel installation required.
+Perform a 6-step audit of an Excel spreadsheet for formula correctness, formatting consistency, data integrity, boss-auditable simplicity, and spec compliance. Uses the `excel-screenshot` MCP server tools — no Excel installation required.
 
-**Architecture**: Validate → Discover → Load Specs → Deep Audit (4 categories) → Visual Verify → Report. Free, fully local.
+**Architecture**: Validate → Discover → Load Specs → Deep Audit (5 categories) → Visual Verify → Report. Free, fully local.
+
+**BOSS-AUDITABLE PRINCIPLE**: Every formula in the workbook must be understandable by a non-technical person who clicks the cell. Only simple arithmetic (+, -, *, /), plain cell references, and small SUM() are allowed. Time entry totals must show each individual entry as an explicit addend (=8+8+8, never =SUM(range) or =24). This rule is enforced in Step 3E and cross-checked in Steps 3A and 3D.
 
 **CRITICAL: Execute the full audit silently and present results at the end. Only interact with the user in Step 0 (file selection) and Step 2 (spec clarification if no specs found).**
 
@@ -105,7 +107,8 @@ spreadsheet_read_range(file_path, sheet_name, used_range, include_formatting=Fal
 - **Absolute-anchor**: Contains **$** dollar-sign locks on rows and columns (absolute references) → do NOT replace locked row numbers, only relative ones
 - **Named range**: References named ranges (no cell addresses) → skip normalization, treat as its own pattern class
 - **Structured table**: Uses [@Column] syntax → skip normalization, treat as its own pattern class
-- **Dynamic**: Contains INDIRECT, OFFSET, or INDEX → flag as [INFO] "dynamic formula — manual review recommended", do not pattern-match
+- **Dynamic**: Contains INDIRECT, OFFSET, or INDEX → flag as [CRITICAL] "banned complex function — not boss-auditable", do not pattern-match
+- **Banned function**: Contains any function from the banned list (see 3E) → flag as [CRITICAL] "banned function — rewrite as simple arithmetic"
 
 Check for:
 1. **Hardcoded values in formula columns** — Per-column check: if a column's majority (>60%) cells contain formulas, flag any cell in that column with a raw literal value as "potential hardcoded override" [WARNING]. Columns that are 100% literal values are normal data columns — skip them entirely.
@@ -161,6 +164,104 @@ Using specs from Step 2:
 6. **Style rules match** — If spec defines header style (bold, fill color, font size), verify. Mismatch = [WARNING].
 7. **Custom rules** — Any additional user-specified constraints from the spec.
 
+### 3E: Boss-Auditable Formula Simplicity
+
+**PURPOSE**: Ensure every formula is understandable by a non-technical boss who clicks the cell. This is not optional — it is the highest-priority audit category. A formula that produces the right number but cannot be visually understood by a layperson is a CRITICAL finding.
+
+#### Allowed Formulas (whitelist)
+
+Only these formula patterns are permitted:
+
+1. **Simple arithmetic**: =A5+B5, =C3-D3, =E2*F2, =G7/H7, and combinations like =A1+B1-C1
+2. **Plain cell references**: =A5, =Sheet1!B3 (single cell, no functions)
+3. **Explicit addend chains**: =8+8+8+4, =10.5+8+7.5 (literal numbers joined by +)
+4. **Small SUM()**: =SUM(A1,A2,A3) or =SUM(A1:A5) where the range spans 10 or fewer cells. SUM is the ONLY allowed function.
+5. **Simple cross-sheet references**: =Sheet1!B5, ='Other Sheet'!C10 (plain reference, no functions wrapping it)
+
+#### Banned Functions (comprehensive list)
+
+Any formula containing these functions is flagged [CRITICAL] with a suggested simple rewrite:
+
+**Lookup/Reference** (boss cannot trace data flow):
+VLOOKUP, HLOOKUP, XLOOKUP, INDEX, MATCH, CHOOSE, INDIRECT, OFFSET, ROW, COLUMN, ADDRESS, AREAS, LOOKUP
+
+**Conditional aggregation** (hides which rows are included):
+SUMIF, SUMIFS, COUNTIF, COUNTIFS, AVERAGEIF, AVERAGEIFS, SUMPRODUCT, DSUM, DCOUNT, DAVERAGE, MAXIFS, MINIFS
+
+**Logic/nesting** (branches confuse non-technical readers):
+IF (nested — a single flat IF like =IF(A1>0,A1,0) is borderline [WARNING], nested IF is [CRITICAL]), IFS, SWITCH, AND, OR, NOT, IFERROR, IFNA, ISERROR, ISBLANK, ISNA
+
+**Text manipulation** (boss expects to see text, not text formulas):
+CONCATENATE, CONCAT, TEXTJOIN, LEFT, RIGHT, MID, LEN, FIND, SEARCH, SUBSTITUTE, REPLACE, TEXT, TRIM, CLEAN, UPPER, LOWER, PROPER, REPT, VALUE, NUMBERVALUE
+
+**Array/dynamic** (completely opaque to non-technical users):
+Any formula wrapped in curly braces (array formula), FILTER, SORT, SORTBY, UNIQUE, SEQUENCE, RANDARRAY, LET, LAMBDA, MAP, REDUCE, SCAN, MAKEARRAY, BYCOL, BYROW
+
+**Date/time functions** (prefer explicit values):
+DATE, DATEVALUE, TODAY, NOW, YEAR, MONTH, DAY, WEEKDAY, WEEKNUM, NETWORKDAYS, WORKDAY, EDATE, EOMONTH, DATEDIF
+
+**Math beyond basics** (boss should see the arithmetic):
+ROUND, ROUNDUP, ROUNDDOWN, CEILING, FLOOR, MOD, ABS, SIGN, INT, TRUNC, POWER, SQRT, LOG, LN, EXP, FACT, PRODUCT, AGGREGATE, SUBTOTAL
+
+**Statistical** (hides which values are aggregated):
+AVERAGE (use explicit addend chain divided by count instead), MEDIAN, MODE, STDEV, VAR, MIN, MAX, LARGE, SMALL, PERCENTILE, QUARTILE, COUNT, COUNTA, COUNTBLANK, RANK
+
+#### Detection Method
+
+For every formula cell in the workbook:
+
+1. **Extract function names**: Use regex to find all function calls in the formula. Pattern: match any uppercase word immediately followed by an opening parenthesis, e.g., `[A-Z][A-Z0-9_.]+(?=\()`. This captures SUM(, VLOOKUP(, IF(, etc.
+2. **Check against banned list**: If any extracted function name appears in the banned list above, flag the cell as [CRITICAL].
+3. **Check SUM range size**: If the formula uses SUM(), parse the range argument. If it is a contiguous range (e.g., A1:A50), count the cells. If the range spans more than 10 cells, flag as [WARNING] "SUM range too large for easy verification — boss cannot confirm all included cells at a glance. Consider breaking into smaller explicit sums or using explicit addends."
+4. **Check for array formulas**: If the formula text starts with { and ends with } (legacy array formula) or contains FILTER/SORT/UNIQUE/LET/LAMBDA, flag as [CRITICAL].
+5. **Check nesting depth**: Count opening parentheses. If a formula has more than 2 levels of nesting (e.g., =SUM(A1,(B2+C3)) is 2 levels — OK; =IF(A1>0,SUM(IF(B1:B10>0,B1:B10)),0) is 3+ levels — CRITICAL), flag as [CRITICAL] "formula too deeply nested for non-technical audit."
+
+#### Time Entry Explicit-Addend Rule
+
+**This is the most important sub-rule.** When time entries (hours worked) are totaled in a cell, the formula MUST show each individual time entry as a literal number joined by addition. This lets the boss click the cell and see exactly which hours make up the total.
+
+**Detection — identifying time/hours columns**: A column is a "time entry" or "hours" column if ANY of these are true:
+- Column header contains: "hours", "hrs", "time", "total hours", "reg", "ot", "dt", "regular", "overtime", "double time", "straight time", "ST", "OT", "DT" (case-insensitive)
+- Column header matches a day-of-week pattern: "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Monday", "Tuesday", etc.
+- Column header matches a date pattern: "3/10", "03/10", "Mar 10", "2025-03-10", etc.
+- The column is in a row context where the row header or adjacent label column contains "hours", "time", "labor"
+
+**Validation for time/hours cells**:
+1. If the cell contains a formula that uses SUM() over a range (e.g., =SUM(B5:H5)), flag as [CRITICAL]: "Time entry total uses SUM(range) — boss cannot see individual entries. Rewrite as explicit addends, e.g., =8+8+8+4+8+0+0"
+2. If the cell contains a single hardcoded number (e.g., 24) in a totals column where other cells in the same column use formulas, flag as [CRITICAL]: "Time entry total is a hardcoded number — boss cannot verify which days contribute. Rewrite as explicit addends, e.g., =8+8+8"
+3. If the cell contains an explicit addend chain (e.g., =8+8+8+4), this is CORRECT — no finding.
+4. If the cell contains a formula referencing individual cells with + (e.g., =B5+C5+D5+E5+F5), this is ACCEPTABLE but flag as [INFO]: "Consider using literal values (=8+8+8+4+8) instead of cell references so boss sees actual hours without clicking referenced cells"
+5. **Addend count threshold**: If a time total would require more than 31 explicit addends (i.e., more than a full month of daily entries), cell references with + are acceptable without the INFO flag. For 31 or fewer entries, prefer literal addends.
+
+**Suggested rewrites**: For every [CRITICAL] time entry finding, include a concrete rewrite suggestion. Example:
+```
+[CRITICAL] Sheet1!H5: =SUM(B5:G5) — time total uses SUM(range)
+  Current: =SUM(B5:G5) → evaluates to 44
+  Rewrite: =8+8+8+8+4+8 (showing Mon=8, Tue=8, Wed=8, Thu=8, Fri=4, Sat=8)
+  Reason: Boss can click cell and see each day's hours
+```
+
+To build the rewrite: read the values of the referenced cells (B5 through G5), then construct the addend chain from those values.
+
+#### Cross-Sheet Simplicity
+
+Cross-sheet references are allowed ONLY as plain cell references:
+- ALLOWED: =Sheet1!B5, ='Payroll Data'!C10
+- BANNED: =VLOOKUP(A5,'Payroll Data'!A:C,3,FALSE), =SUMIF(Sheet1!A:A,A5,Sheet1!B:B)
+
+If a formula combines a cross-sheet reference with any banned function, flag as [CRITICAL]: "Complex cross-sheet formula — boss cannot trace data source. Use a plain reference like =Sheet1!B5 instead."
+
+#### Reporting Format for 3E
+
+For each finding, record: sheet, cell, severity, current formula, evaluated value, suggested rewrite, reason.
+
+Group findings into:
+- **Banned functions found** (with function name and cell location)
+- **Time entry violations** (with current formula and suggested explicit-addend rewrite)
+- **SUM range too large** (with range size and suggestion)
+- **Excessive nesting** (with nesting depth)
+- **Complex cross-sheet formulas** (with referenced sheet and function used)
+
 ---
 
 ## Step 4: Visual Verification via Screenshots
@@ -196,6 +297,7 @@ For each sheet with findings:
 | Category | Issues | Critical | Warning | Info |
 |----------|--------|----------|---------|------|
 | Formulas | {n} | {n} | {n} | {n} |
+| Boss-Auditable | {n} | {n} | {n} | {n} |
 | Formatting | {n} | {n} | {n} | {n} |
 | Data Integrity | {n} | {n} | {n} | {n} |
 | Spec Compliance | {n} | {n} | {n} | {n} |
@@ -208,9 +310,9 @@ For each sheet with findings:
 ```
 
 **Severity levels**:
-- **CRITICAL**: Will produce wrong numbers or errors — broken formulas, skipped row references, broken cross-sheet refs, duplicate IDs, missing required sheets/headers from spec
-- **WARNING**: May be an error or spec violation — hardcoded values in formula columns, inconsistent number formats, missing values in well-populated columns, format mismatches vs spec
-- **INFO**: Style inconsistency or improvement suggestion — missing totals, font/alignment outliers, merged cells in data area, arithmetic neighbor suggestions, single-cell formula deviations
+- **CRITICAL**: Will produce wrong numbers, errors, OR is not boss-auditable — broken formulas, skipped row references, broken cross-sheet refs, duplicate IDs, missing required sheets/headers from spec, **banned functions**, **time entry totals not shown as explicit addends**, **excessive nesting**, **complex cross-sheet formulas**
+- **WARNING**: May be an error or spec violation — hardcoded values in formula columns, inconsistent number formats, missing values in well-populated columns, format mismatches vs spec, **SUM over large ranges (>10 cells)**, **single flat IF statement**
+- **INFO**: Style inconsistency or improvement suggestion — missing totals, font/alignment outliers, merged cells in data area, arithmetic neighbor suggestions, single-cell formula deviations, **time entry using cell references instead of literal addends**
 
 ### 5B: Detailed Report File
 
@@ -231,6 +333,11 @@ Save to {working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md (timestamp ens
 | Sheet | Cell | Severity | Issue | Current | Expected |
 |-------|------|----------|-------|---------|----------|
 {findings from 3A}
+
+## Boss-Auditable Simplicity Findings
+| Sheet | Cell | Severity | Issue | Current Formula | Suggested Rewrite |
+|-------|------|----------|-------|----------------|-------------------|
+{findings from 3E — banned functions, time entry violations, large SUM ranges, nesting, complex cross-sheet}
 
 ## Formatting Findings
 | Sheet | Range | Severity | Issue | Actual | Expected |
@@ -283,7 +390,7 @@ Save to {working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md (timestamp ens
 
 ## Key Techniques Reference
 
-1. **Formula normalization**: Replace RELATIVE row numbers only with {R} — preserve absolute refs (dollar-sign locks on rows and columns). Pre-classify formulas into: relative, absolute-anchor, named-range, structured-table, dynamic (INDIRECT/OFFSET).
+1. **Formula normalization**: Replace RELATIVE row numbers only with {R} — preserve absolute refs (dollar-sign locks on rows and columns). Pre-classify formulas into: relative, absolute-anchor, named-range, structured-table, dynamic, banned-function.
 2. **Skipped row detection**: Parse cell references from formulas. If a formula in row 10 references row 8, it's likely a copy-paste error.
 3. **Cross-sheet regex**: Look for patterns like 'SheetName'! or SheetName! in formulas to extract referenced sheet names.
 4. **Arithmetic neighbor check**: Scope to data regions with 5+ consecutive rows. Skip date columns and section headers/subtotals. Test sum, difference, product of immediate neighbors.
@@ -291,4 +398,8 @@ Save to {working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md (timestamp ens
 6. **Merged cell boundary**: Data start row is the boundary. Merges above = OK, merges at/below = INFO-level note.
 7. **Visual scale**: `scale=2.0` (192 DPI) is optimal for AI multimodal analysis. Visual override restricted to layout issues only.
 8. **Chunk overlap**: 5-row overlap buffer at chunk boundaries + accumulated cross-chunk pattern state.
-9. **Severity calibration**: CRITICAL = produces wrong numbers/errors. WARNING = may be an error. INFO = style suggestion.
+9. **Severity calibration**: CRITICAL = wrong numbers/errors OR not boss-auditable. WARNING = may be an error. INFO = style suggestion.
+10. **Banned function detection**: Extract function names via regex `[A-Z][A-Z0-9_.]+(?=\()`, check against the banned list in 3E. SUM is the only allowed function (with range-size limits).
+11. **Time entry column detection**: Match column headers against hours/time/day-of-week/date patterns (case-insensitive). Time totals must be explicit addend chains (=8+8+8), never SUM(range) or hardcoded literals.
+12. **Explicit addend rewrite**: For flagged time entry cells, read the referenced cell values and construct a replacement formula as literal addends joined by +. Include the rewrite in the finding.
+13. **Nesting depth check**: Count parenthesis nesting levels. More than 2 levels = CRITICAL. A simple =SUM(A1+B1) is 1 level. =IF(A1>0,SUM(B1,C1),0) is 2 levels.
