@@ -180,7 +180,7 @@ Only these formula patterns are permitted:
 
 #### Banned Functions (comprehensive list)
 
-Any formula containing these functions is flagged [CRITICAL] with a suggested simple rewrite:
+Any formula containing these functions is flagged [CRITICAL] with a suggested simple rewrite. **Note**: Excel 2013+ prefixes newer functions with _xlfn. or _xlws. in the stored formula (e.g., _xlfn.XLOOKUP, _xlfn.IFS, _xlfn.CONCAT). Always strip these prefixes before checking the banned list — they are invisible to the user but present in openpyxl formula strings.
 
 **Lookup/Reference** (boss cannot trace data flow):
 VLOOKUP, HLOOKUP, XLOOKUP, INDEX, MATCH, CHOOSE, INDIRECT, OFFSET, ROW, COLUMN, ADDRESS, AREAS, LOOKUP
@@ -208,13 +208,60 @@ AVERAGE (use explicit addend chain divided by count instead), MEDIAN, MODE, STDE
 
 #### Detection Method
 
+**Primary: openpyxl Tokenizer** — use the openpyxl formula tokenizer for structural classification. This is more robust than regex alone for nested formulas and edge cases.
+
+```python
+from openpyxl.formula import Tokenizer
+
+def classify_formula(formula_text):
+    """Classify a formula for boss-auditability using openpyxl Tokenizer."""
+    tok = Tokenizer(formula_text)
+    functions_found = []
+    nesting_depth = 0
+    max_nesting = 0
+    is_array = False
+
+    for t in tok.items:
+        if t.type == 'FUNC' and t.subtype == 'OPEN':
+            func_name = t.value.rstrip('(').replace('_xlfn.', '').replace('_xlws.', '')
+            functions_found.append(func_name)
+            nesting_depth += 1
+            max_nesting = max(max_nesting, nesting_depth)
+        elif t.type == 'FUNC' and t.subtype == 'CLOSE':
+            nesting_depth -= 1
+        elif t.type == 'ARRAY':
+            is_array = True
+
+    return functions_found, max_nesting, is_array
+```
+
+**Supplementary: regex fallback** — for formulas the Tokenizer cannot parse (malformed, external add-in functions), fall back to regex extraction. Pattern: match any uppercase word immediately followed by an opening parenthesis. Strip the _xlfn. and _xlws. prefixes that Excel 2013+ adds to newer functions before checking the banned list.
+
 For every formula cell in the workbook:
 
-1. **Extract function names**: Use regex to find all function calls in the formula. Pattern: match any uppercase word immediately followed by an opening parenthesis, e.g., `[A-Z][A-Z0-9_.]+(?=\()`. This captures SUM(, VLOOKUP(, IF(, etc.
-2. **Check against banned list**: If any extracted function name appears in the banned list above, flag the cell as [CRITICAL].
-3. **Check SUM range size**: If the formula uses SUM(), parse the range argument. If it is a contiguous range (e.g., A1:A50), count the cells. If the range spans more than 10 cells, flag as [WARNING] "SUM range too large for easy verification — boss cannot confirm all included cells at a glance. Consider breaking into smaller explicit sums or using explicit addends."
-4. **Check for array formulas**: If the formula text starts with { and ends with } (legacy array formula) or contains FILTER/SORT/UNIQUE/LET/LAMBDA, flag as [CRITICAL].
-5. **Check nesting depth**: Count opening parentheses. If a formula has more than 2 levels of nesting (e.g., =SUM(A1,(B2+C3)) is 2 levels — OK; =IF(A1>0,SUM(IF(B1:B10>0,B1:B10)),0) is 3+ levels — CRITICAL), flag as [CRITICAL] "formula too deeply nested for non-technical audit."
+1. **Tokenize the formula**: Run the Tokenizer to extract function names, nesting depth, and array status. If the Tokenizer raises an exception, fall back to regex extraction.
+2. **Strip Excel prefixes**: Remove _xlfn. and _xlws. prefixes from function names before checking the banned list. These prefixes appear on newer functions like XLOOKUP, FILTER, CONCAT, IFS, SWITCH, MAXIFS, MINIFS, TEXTJOIN, and others.
+3. **Check against banned list**: If any extracted function name appears in the banned list above, flag the cell as [CRITICAL].
+4. **Check SUM range size** (tiered rules):
+
+| SUM Pattern | Cells | Severity | Action |
+|-------------|-------|----------|--------|
+| Explicit args: SUM(A1,A2,A3) | 2-5 | PASS | No finding |
+| Explicit args: SUM(A1,A2,...,A8) | 6-10 | PASS with NOTE | "Boss can verify but consider explicit addends" |
+| Contiguous range: SUM(A1:A10) | up to 10 | [WARNING] | "Range hides individual values — prefer explicit addends" |
+| Any SUM pattern | 11-50 | [WARNING] | "SUM range too large — break into smaller explicit sums" |
+| Any SUM pattern | 51+ | [CRITICAL] | "SUM range far too large for audit — must restructure" |
+| Named range: SUM(HoursWorked) | any | [CRITICAL] | "Named range hides both source and count" |
+
+5. **Check for array formulas**: Two detection methods:
+   - **Cell-level**: If the formula text is wrapped in curly braces (legacy CSE array formula), flag as [CRITICAL]
+   - **Sheet-level**: Check the worksheet's array_formulae property (openpyxl exposes this as ws.array_formulae) for any array formula ranges that include the current cell. Flag as [CRITICAL] "legacy array formula — completely opaque to non-technical users"
+   - **Dynamic arrays**: If the formula contains FILTER, SORT, SORTBY, UNIQUE, SEQUENCE, RANDARRAY, LET, LAMBDA, MAP, REDUCE, SCAN, flag as [CRITICAL]
+6. **Check nesting depth**: Use the Tokenizer's FUNC OPEN/CLOSE token pairs to track actual function nesting (not just parenthesis counting, which over-counts arithmetic grouping). If nesting exceeds 2 levels, flag as [CRITICAL] "formula too deeply nested for non-technical audit." Example: =SUM(A1+B1) is 1 level (OK). =IF(A1>0,SUM(B1,C1),0) is 2 levels (OK). =IF(A1>0,SUM(IF(B1:B10>0,B1:B10)),0) is 3 levels (CRITICAL).
+7. **Auto-fix generation**: For deterministic CRITICAL findings, generate a concrete suggested rewrite:
+   - Small SUM(range) where all values are known: rewrite as explicit addend chain
+   - Single ROUND wrapping simple arithmetic: remove ROUND, note the rounding in a cell comment instead
+   - Single flat IF with simple branches: suggest splitting into two clearly labeled rows
 
 #### Time Entry Explicit-Addend Rule
 
@@ -399,7 +446,10 @@ Save to {working_directory}/audit_{filename}_{YYYY-MM-DD_HHmm}.md (timestamp ens
 7. **Visual scale**: `scale=2.0` (192 DPI) is optimal for AI multimodal analysis. Visual override restricted to layout issues only.
 8. **Chunk overlap**: 5-row overlap buffer at chunk boundaries + accumulated cross-chunk pattern state.
 9. **Severity calibration**: CRITICAL = wrong numbers/errors OR not boss-auditable. WARNING = may be an error. INFO = style suggestion.
-10. **Banned function detection**: Extract function names via regex `[A-Z][A-Z0-9_.]+(?=\()`, check against the banned list in 3E. SUM is the only allowed function (with range-size limits).
+10. **Banned function detection**: Primary: openpyxl Tokenizer extracts typed FUNC tokens. Supplementary: regex fallback. Always strip _xlfn. and _xlws. prefixes before checking banned list. SUM is the only allowed function (with tiered range-size rules).
 11. **Time entry column detection**: Match column headers against hours/time/day-of-week/date patterns (case-insensitive). Time totals must be explicit addend chains (=8+8+8), never SUM(range) or hardcoded literals.
 12. **Explicit addend rewrite**: For flagged time entry cells, read the referenced cell values and construct a replacement formula as literal addends joined by +. Include the rewrite in the finding.
-13. **Nesting depth check**: Count parenthesis nesting levels. More than 2 levels = CRITICAL. A simple =SUM(A1+B1) is 1 level. =IF(A1>0,SUM(B1,C1),0) is 2 levels.
+13. **Nesting depth check**: Use Tokenizer FUNC OPEN/CLOSE pairs to track actual function nesting (not parenthesis counting). More than 2 levels = CRITICAL.
+14. **Array formula detection**: Two sources: cell-level curly brace wrapping + sheet-level ws.array_formulae property. Both must be checked.
+15. **Excel function prefix stripping**: _xlfn. (XLOOKUP, FILTER, IFS, etc.) and _xlws. prefixes must be stripped before banned list comparison. These are invisible to users but present in openpyxl formula strings.
+16. **Auto-fix generation**: For deterministic CRITICAL findings (small SUM with known values, single ROUND, single flat IF), generate concrete rewrite suggestions.
