@@ -263,6 +263,14 @@ class BrowserLock:
         self.release()
 
 
+# Perplexity slash-command UI commit key. As of 2026-05-05 Perplexity's
+# command palette commits on Space (not Enter — Enter submits the literal
+# "/research" string as a regular search query). If Perplexity changes
+# this again, edit ONLY this constant + the matching one in
+# ~/.claude/mcp-servers/browser-bridge/server.js. Don't grep-and-hunt.
+PERPLEXITY_COMMIT_KEY = "Space"
+
+
 def _log(msg: str) -> None:
     """Log to stderr (stdout reserved for JSON result)."""
     print(f"  [browser] {msg}", file=sys.stderr)
@@ -787,38 +795,84 @@ class PerplexityCouncil:
         """Activate the configured Perplexity mode via slash command.
 
         Supports: /council (multi-model) and /research (deep research).
+
+        Emits structured `[browser] activate_mode ...` log lines at every
+        decision point so a Perplexity UI change (e.g. commit-key swap) is
+        diagnosable from a single log entry instead of a multi-day arc.
         """
         slash_cmd = f"/{self.perplexity_mode}"
-        _log(f"Activating {self.perplexity_mode} mode via {slash_cmd}...")
         textarea = self.selectors.get("textarea", "#ask-input")
+        t0 = time.perf_counter()
+        _log(
+            f"activate_mode start mode={self.perplexity_mode} "
+            f"slash_cmd={slash_cmd} commit_key={PERPLEXITY_COMMIT_KEY} "
+            f"textarea={textarea}"
+        )
 
         # Focus the input
         try:
             await page.click(textarea)
             await page.wait_for_timeout(500)
         except Exception as e:
-            _log(f"Failed to focus input: {e}")
+            _log(
+                f"activate_mode FAIL step=focus mode={self.perplexity_mode} "
+                f"textarea={textarea} error={e!r}"
+            )
             return False
 
         # Type the slash command
         await page.keyboard.type(slash_cmd, delay=BROWSER_TYPE_DELAY)
         await page.wait_for_timeout(1500)  # Wait for command palette
+        _log(
+            f"activate_mode step=palette_typed mode={self.perplexity_mode} "
+            f"chars={len(slash_cmd)} elapsed_ms={int((time.perf_counter() - t0) * 1000)}"
+        )
 
-        # Press Space to activate (Perplexity slash-command palette commits on Space, not Enter,
-        # since the 2026-05-05 UI change — Enter submits the literal "/research" string instead)
-        await page.keyboard.press("Space")
+        # Press the Perplexity commit key (Space — see PERPLEXITY_COMMIT_KEY).
+        await page.keyboard.press(PERPLEXITY_COMMIT_KEY)
         await page.wait_for_timeout(1500)  # Wait for activation
+        _log(
+            f"activate_mode step=commit_pressed mode={self.perplexity_mode} "
+            f"key={PERPLEXITY_COMMIT_KEY} "
+            f"elapsed_ms={int((time.perf_counter() - t0) * 1000)}"
+        )
 
         # Verify activation based on mode
         if self.perplexity_mode == "council":
-            return await self._verify_council_activation(page)
+            ok = await self._verify_council_activation(page)
         elif self.perplexity_mode == "research":
-            return await self._verify_research_activation(page)
+            ok = await self._verify_research_activation(page)
         elif self.perplexity_mode == "labs":
-            return await self._verify_labs_activation(page)
+            ok = await self._verify_labs_activation(page)
         else:
-            _log(f"Unknown mode '{self.perplexity_mode}', proceeding optimistically")
+            _log(
+                f"activate_mode step=verify_skipped mode={self.perplexity_mode} "
+                f"reason=unknown_mode"
+            )
             return True
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        if ok:
+            _log(
+                f"activate_mode SUCCESS mode={self.perplexity_mode} "
+                f"key={PERPLEXITY_COMMIT_KEY} elapsed_ms={elapsed_ms}"
+            )
+        else:
+            # Capture the current URL on failure. If it's /search/<uuid>,
+            # Perplexity treated the slash as a search submit — almost
+            # certainly the commit key is wrong (Perplexity UI changed).
+            # If it's the homepage, the verifier just couldn't find the
+            # indicator and we're in optimistic-proceed territory.
+            try:
+                current_url = page.url
+            except Exception:
+                current_url = "<unknown>"
+            _log(
+                f"activate_mode FAIL step=verify mode={self.perplexity_mode} "
+                f"key={PERPLEXITY_COMMIT_KEY} elapsed_ms={elapsed_ms} "
+                f"url={current_url}"
+            )
+        return ok
 
     async def _verify_council_activation(self, page) -> bool:
         """Verify council mode activated (look for '3 models' indicator)."""

@@ -42,6 +42,13 @@ _debugLog('[council-mcp] build=2026-04-21T10');
 
 const rateLimiter = new RateLimiter(60, 1);
 
+// Perplexity slash-command UI commit key. As of 2026-05-05 Perplexity's
+// command palette commits on Space (not Enter — Enter submits the literal
+// "/research" string as a regular search query). If Perplexity changes
+// this again, edit ONLY this constant + the matching one in
+// ~/.claude/council-automation/council_browser.py. Don't grep-and-hunt.
+const PERPLEXITY_COMMIT_KEY = 'Space';
+
 /**
  * Async wrapper around child_process.execFile — does NOT block the event loop.
  * Used for long-running council/research/labs queries so multiple can run concurrently.
@@ -1046,28 +1053,43 @@ class BrowserBridgeServer {
           );
         }
 
-        // Step B: If mode is research or labs, type the slash command first
+        // Step B: If mode is research or labs, type the slash command first.
+        // Emits structured `activate_mode_*` log lines around the commit keypress
+        // so a Perplexity UI change (e.g. commit-key swap) is diagnosable from
+        // one log entry instead of a multi-day arc.
         if (mode === 'research' || mode === 'labs') {
+          const slashCmd = mode === 'research' ? '/research ' : '/labs ';
+          const activateT0 = Date.now();
+          log.info('activate_mode_start', {
+            mode,
+            slash_cmd: slashCmd.trim(),
+            commit_key: PERPLEXITY_COMMIT_KEY,
+            tabId,
+          });
           // Click the input to focus it
           await this.bridge.broadcast(
             { type: 'action_request', payload: this._withSession({ action: 'click', selector: SEL.input, tabId }) },
             CONFIG.timeouts.quick,
           );
           // Type the slash command
-          const slashCmd = mode === 'research' ? '/research ' : '/labs ';
           await this.bridge.broadcast(
             { type: 'cdp_type', payload: this._withSession({ text: slashCmd, delay: 50, tabId }) },
             CONFIG.timeouts.councilUi,
           );
-          // Wait for the command palette to appear and press Space to select
-          // (Perplexity slash-command palette commits on Space since 2026-05-05 UI change;
-          // Enter submits the literal "/research" string as a regular search query)
+          // Wait for the command palette to appear and press the Perplexity
+          // commit key (Space — see PERPLEXITY_COMMIT_KEY at top of file).
           await new Promise((r) => setTimeout(r, 1500));
           await this.bridge.broadcast(
-            { type: 'action_request', payload: this._withSession({ action: 'pressKey', key: 'Space', tabId }) },
+            { type: 'action_request', payload: this._withSession({ action: 'pressKey', key: PERPLEXITY_COMMIT_KEY, tabId }) },
             CONFIG.timeouts.quick,
           );
           await new Promise((r) => setTimeout(r, 500));
+          log.info('activate_mode_commit_pressed', {
+            mode,
+            key: PERPLEXITY_COMMIT_KEY,
+            elapsedMs: Date.now() - activateT0,
+            tabId,
+          });
         }
 
         // Step C: Click input and type the task
