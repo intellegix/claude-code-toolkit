@@ -423,7 +423,11 @@ class PerplexityCouncil:
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-dev-shm-usage",
-            "--disable-features=IsolateOrigins,site-per-process",
+            # Extended --disable-features set: original isolation flags + four
+            # features that suppress UI overlays / profile-teardown races which
+            # can hold the temp user_data_dir locked across concurrent runs and
+            # trigger ProcessSingleton false-positive matches.
+            "--disable-features=IsolateOrigins,site-per-process,DestroyProfileOnBrowserClose,ChromeWhatsNewUI,DownloadBubble,DownloadBubbleV2",
             f"--window-size={vp_w},{vp_h}",
             # Resource-saving (all instances)
             "--disable-background-networking",
@@ -433,6 +437,14 @@ class PerplexityCouncil:
             "--metrics-recording-only",
             "--no-report-upload",
             "--disk-cache-size=10485760",  # 10MB disk cache per instance
+            # Isolation hardening (2026-05-13 — see ~/.claude/plans/lexical-toasting-babbage.md).
+            # Suppress crash-recovery dialog, prevent crash-reporter file locks,
+            # disable background service registration, and keep credentials out
+            # of the OS keychain so concurrent instances don't contend on it.
+            "--disable-session-crashed-bubble",
+            "--disable-breakpad",
+            "--no-service-autorun",
+            "--password-store=basic",
             # Per-instance window offset
             f"--window-position={100 + (instance_id * 60)},{100 + (instance_id * 40)}",
         ]
@@ -616,7 +628,13 @@ class PerplexityCouncil:
         concurrently. Cookies injected via _load_session() after launch.
         Per-instance fingerprint diversification applied via instance_id.
         """
-        self._temp_profile_dir = tempfile.mkdtemp(prefix="council_np_")
+        # Canonicalise the temp dir: resolve symlinks, fix case, strip trailing
+        # separator. Defeats Chrome's FindRunningChromeWindow false-positive title
+        # match on Windows (mixed-case drives, 8.3 short paths, trailing seps),
+        # which was causing concurrent /research-perplexity calls to share state
+        # via WM_COPYDATA forwarding into an existing chrome.exe instance.
+        raw_temp_dir = tempfile.mkdtemp(prefix="council_np_")
+        self._temp_profile_dir = os.path.realpath(raw_temp_dir).rstrip(os.sep)
         fp = self._get_instance_fingerprint(self.instance_id)
         vp_w, vp_h = fp["viewport"]
         _log(f"Non-persistent: instance={self.instance_id} profile={self._temp_profile_dir} viewport={vp_w}x{vp_h}")
@@ -662,7 +680,10 @@ class PerplexityCouncil:
         Cookies injected via _load_session() after launch.
         Per-instance fingerprint diversification applied via instance_id.
         """
-        self._temp_profile_dir = tempfile.mkdtemp(prefix="council_cf_")
+        # Canonicalise the temp dir — same rationale as _start_non_persistent:
+        # defeats Chrome's FindRunningChromeWindow false-positive title match.
+        raw_cf_dir = tempfile.mkdtemp(prefix="council_cf_")
+        self._temp_profile_dir = os.path.realpath(raw_cf_dir).rstrip(os.sep)
         fp = self._get_instance_fingerprint(self.instance_id)
         vp_w, vp_h = fp["viewport"]
         _log(f"Cloudflare fallback: instance={self.instance_id} profile={self._temp_profile_dir} viewport={vp_w}x{vp_h}")
@@ -783,8 +804,9 @@ class PerplexityCouncil:
         await page.keyboard.type(slash_cmd, delay=BROWSER_TYPE_DELAY)
         await page.wait_for_timeout(1500)  # Wait for command palette
 
-        # Press Enter to activate
-        await page.keyboard.press("Enter")
+        # Press Space to activate (Perplexity slash-command palette commits on Space, not Enter,
+        # since the 2026-05-05 UI change — Enter submits the literal "/research" string instead)
+        await page.keyboard.press("Space")
         await page.wait_for_timeout(1500)  # Wait for activation
 
         # Verify activation based on mode

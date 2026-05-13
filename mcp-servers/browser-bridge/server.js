@@ -962,6 +962,12 @@ class BrowserBridgeServer {
             result = raw.stdout;
             if (!result || !result.trim()) {
               log.warn('research_empty_result_retry', { stderr: (raw.stderr || '').substring(0, 500) });
+              return {
+                synthesis: '',
+                error: 'Perplexity returned empty synthesis after 2 attempts. Session may be expired (run /cache-perplexity-session) or Perplexity is throttling (wait 2-3 min and retry).',
+                code: 'EMPTY_RESPONSE',
+                stderr_tail: (raw.stderr || '').substring(0, 500),
+              };
             }
           }
           log.info('query_success', { invocationId, queryType, resultLen: (result || '').length, elapsedMs: Date.now() - startMs });
@@ -1053,10 +1059,12 @@ class BrowserBridgeServer {
             { type: 'cdp_type', payload: this._withSession({ text: slashCmd, delay: 50, tabId }) },
             CONFIG.timeouts.councilUi,
           );
-          // Wait for the command palette to appear and press Enter to select
+          // Wait for the command palette to appear and press Space to select
+          // (Perplexity slash-command palette commits on Space since 2026-05-05 UI change;
+          // Enter submits the literal "/research" string as a regular search query)
           await new Promise((r) => setTimeout(r, 1500));
           await this.bridge.broadcast(
-            { type: 'action_request', payload: this._withSession({ action: 'pressKey', key: 'Enter', tabId }) },
+            { type: 'action_request', payload: this._withSession({ action: 'pressKey', key: 'Space', tabId }) },
             CONFIG.timeouts.quick,
           );
           await new Promise((r) => setTimeout(r, 500));
