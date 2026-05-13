@@ -582,17 +582,76 @@ async function cdpForceReattach(tabId) {
   await new Promise(r => setTimeout(r, CDP_REATTACH_DELAY));
 }
 
-function cdpCommand(tabId, method, params = {}) {
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+/**
+ * Send a CDP command. Two reliability behaviors:
+ *
+ * 1. Refreshes the idle timer on every call. The CDP_IDLE_MS=5000 timer
+ *    set in cdpAcquire fires unconditionally otherwise, releasing the
+ *    debugger mid-flight on any typing sequence > 5s (long question
+ *    strings). With refresh-on-use, the session stays alive as long as
+ *    commands keep arriving; idle release still fires after >5s of true
+ *    quiescence.
+ *
+ * 2. Auto-recovers ONCE if Chrome silently detached the session. Detach
+ *    reasons documented by chrome.debugger.onDetach include
+ *    target_closed, canceled_by_user, replaced_with_devtools — any of
+ *    which can fire at any time without our code calling detach(). The
+ *    cdpSessions Map then lies (attached:true), and the next sendCommand
+ *    throws "Debugger is not attached to the tab" or "Detached while
+ *    handling command." We catch that specific error, clear the stale
+ *    Map entry, re-attach, and retry the original command once.
+ */
+async function cdpCommand(tabId, method, params = {}) {
+  const session = cdpSessions.get(tabId);
+  if (session?.attached) {
+    clearTimeout(session.timer);
+    session.lastUsed = Date.now();
+    session.timer = setTimeout(() => cdpRelease(tabId), CDP_IDLE_MS);
+  }
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (err) {
+    const msg = String(err?.message || err || '');
+    const detached = /not attached|Detached while handling/i.test(msg);
+    if (!detached) throw err;
+    // Stale session — Chrome dropped it but our Map didn't notice.
+    // Clear and try once more with a fresh attach.
+    if (cdpSessions.has(tabId)) {
+      clearTimeout(cdpSessions.get(tabId).timer);
+      cdpSessions.delete(tabId);
+    }
+    await chrome.debugger.attach({ tabId }, '1.3').catch(() => {});
+    cdpSessions.set(tabId, {
+      attached: true,
+      lastUsed: Date.now(),
+      timer: setTimeout(() => cdpRelease(tabId), CDP_IDLE_MS),
+    });
+    return chrome.debugger.sendCommand({ tabId }, method, params);
+  }
 }
 
-// Clean up CDP sessions when tabs are closed
+// Clean up CDP sessions when tabs are closed.
 chrome.tabs.onRemoved.addListener((removedTabId) => {
   if (cdpSessions.has(removedTabId)) {
     clearTimeout(cdpSessions.get(removedTabId).timer);
     cdpSessions.delete(removedTabId);
     chrome.debugger.detach({ tabId: removedTabId }).catch(() => {});
   }
+});
+
+// Clean up cdpSessions Map when Chrome silently detaches the debugger
+// session (reasons per chrome.debugger.onDetach docs: target_closed,
+// canceled_by_user, replaced_with_devtools). Without this, our session
+// state stays `attached: true` after Chrome already dropped the session,
+// and the next cdpCommand's sendCommand call fails. The cdpCommand
+// auto-recovery above is the fallback; this listener is the proactive
+// path that keeps the Map honest.
+chrome.debugger.onDetach.addListener((source, _reason) => {
+  if (!source || typeof source.tabId !== 'number') return;
+  const session = cdpSessions.get(source.tabId);
+  if (!session) return;
+  clearTimeout(session.timer);
+  cdpSessions.delete(source.tabId);
 });
 
 /** Normalize format string for CDP and build params */
