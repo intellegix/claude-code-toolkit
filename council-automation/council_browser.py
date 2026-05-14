@@ -50,7 +50,7 @@ from council_config import (
     INSTANCE_GPU_CUTOFF,
     INSTANCE_LANGUAGES,
     INSTANCE_VIEWPORTS,
-    MAX_CONCURRENT_SESSIONS,
+    MAX_CONCURRENT_SESSIONS,  # noqa: F401 — used transitively via submission_lock
     SELECTORS_PATH,
     SEMAPHORE_TTL,
     SEMAPHORE_WAIT_TIMEOUT,
@@ -61,6 +61,8 @@ from council_config import (
     VISION_POLL_INTERVAL_MODELS,
     VISION_POLL_INTERVAL_SYNTHESIS,
 )
+
+from submission_lock import get_submit_lock
 
 
 class BrowserBusyError(Exception):
@@ -791,6 +793,33 @@ class PerplexityCouncil:
         finally:
             await page.close()
 
+    async def _acquire_submit_lock(self):
+        """Acquire the cross-process Perplexity-submit lock async-safely.
+
+        Two concurrent Claude Code sessions launching Chrome 4 seconds apart
+        on Windows can race on OS-level keyboard focus during slash-command
+        typing (the second `chromium.launch_persistent_context` calls
+        SetForegroundWindow / BringWindowToTop, stealing focus from the
+        first session mid-keystroke). The result: keystrokes go to the wrong
+        target, the slash-command palette closes prematurely, the query
+        submits in Search mode instead of Research, .prose comes back
+        empty, and `server.js` retries-once → new subprocess → new Chrome
+        window. User sees "browsers cancelling each other and trying."
+
+        The fix is a cross-process file lock around the focus-sensitive
+        critical section. `FileLock.acquire` is blocking; we offload to a
+        worker thread so the asyncio event loop keeps pumping (network IO,
+        timer callbacks) while we wait our turn.
+        """
+        lock = get_submit_lock()
+        _log(
+            f"submit_lock waiting timeout_s={lock.timeout:.0f} "
+            f"path={lock.lock_file}"
+        )
+        await asyncio.to_thread(lock.acquire)
+        _log(f"submit_lock acquired path={lock.lock_file}")
+        return lock
+
     async def activate_mode(self, page) -> bool:
         """Activate the configured Perplexity mode via slash command.
 
@@ -875,63 +904,124 @@ class PerplexityCouncil:
         return ok
 
     async def _verify_council_activation(self, page) -> bool:
-        """Verify council mode activated (look for '3 models' indicator)."""
+        """Verify Council mode activated via 2-tier selector cascade.
+
+        Tier 1: stable aria-label selector for the '3 models' dropdown.
+        Tier 2: text-scan for 'Model council' (tolerates DOM drift).
+        Both miss → SELECTOR_DRIFT_DETECTED, return False (was: optimistic True).
+        """
+        # Tier 1: stable aria-label selector
         try:
             three_models = self.selectors.get("threeModelsDropdown", "button[aria-label='3 models']")
             await page.wait_for_selector(three_models, timeout=5000)
-            _log("Council mode activated (found '3 models' indicator)")
+            _log("activate_mode verify=OK mode=council indicator=tier1_aria_label")
             return True
-        except Exception:
-            try:
-                council_text = await page.evaluate(
-                    "!!document.querySelector('button')?.textContent?.includes('Model council')"
-                )
-                if council_text:
-                    _log("Council mode activated (found 'Model council' text)")
-                    return True
-            except Exception:
-                pass
-            _log("WARNING: Could not verify council activation, proceeding anyway")
-            return True  # Proceed optimistically
+        except Exception as e:
+            _log(f"activate_mode verify=tier1_MISS mode=council exception={e!r}")
+
+        # Tier 2: fallback — text scan for 'Model council'
+        try:
+            council_text = await page.evaluate(
+                "!!document.querySelector('button')?.textContent?.includes('Model council')"
+            )
+            if council_text:
+                _log("activate_mode verify=OK mode=council indicator=tier2_text_scan")
+                return True
+        except Exception as e:
+            _log(f"activate_mode verify=tier2_ERROR mode=council exception={e!r}")
+
+        # Both tiers missed — selector drift is the most likely cause if
+        # this fires repeatedly. The structured log line is the signal.
+        _log("activate_mode verify=FAIL mode=council indicator=SELECTOR_DRIFT_DETECTED")
+        return False
 
     async def _verify_research_activation(self, page) -> bool:
-        """Verify research mode activated (look for research indicators)."""
+        """Verify Research mode activated via 2-tier selector cascade.
+
+        Tier 1: exact-text match for the activated mode pill ("Deep research"
+        or "Research" exactly). Catches the canonical activated state.
+        Tier 2: case-insensitive contains scan for 'deep research' or
+        exact 'research'. Tolerates minor Perplexity UI tweaks.
+        Both miss → SELECTOR_DRIFT_DETECTED, return False (was: optimistic True).
+        """
+        # Tier 1: exact-text match on the toolbar mode pill
         try:
-            # Research mode shows a "Research" or "Deep Research" indicator
-            found = await page.evaluate("""() => {
-                const buttons = document.querySelectorAll('button, [role="button"], div[data-state]');
-                for (const b of buttons) {
-                    const text = (b.textContent || '').trim().toLowerCase();
-                    if (text.includes('research') || text.includes('deep research')) return true;
+            primary_found = await page.evaluate("""() => {
+                const candidates = document.querySelectorAll('button, [role="button"], div[data-state]');
+                for (const el of candidates) {
+                    const text = (el.textContent || '').trim();
+                    if (text === 'Deep research' || text === 'Research') return true;
                 }
                 return false;
             }""")
-            if found:
-                _log("Research mode activated (found research indicator)")
+            if primary_found:
+                _log("activate_mode verify=OK mode=research indicator=tier1_exact_match")
                 return True
-        except Exception:
-            pass
-        _log("WARNING: Could not verify research activation, proceeding anyway")
-        return True  # Proceed optimistically
+        except Exception as e:
+            _log(f"activate_mode verify=tier1_ERROR mode=research exception={e!r}")
+
+        # Tier 2: looser case-insensitive contains-scan as DOM-drift fallback
+        try:
+            fallback_found = await page.evaluate("""() => {
+                const candidates = document.querySelectorAll('button, [role="button"], div[data-state], span[class*="pill"], span[class*="badge"]');
+                for (const el of candidates) {
+                    const text = (el.textContent || '').trim().toLowerCase();
+                    if (text.includes('deep research') || text === 'research') return true;
+                }
+                return false;
+            }""")
+            if fallback_found:
+                _log("activate_mode verify=OK mode=research indicator=tier2_contains_match")
+                return True
+        except Exception as e:
+            _log(f"activate_mode verify=tier2_ERROR mode=research exception={e!r}")
+
+        # Both tiers missed — selector drift is the most likely cause if
+        # this fires repeatedly.
+        _log("activate_mode verify=FAIL mode=research indicator=SELECTOR_DRIFT_DETECTED")
+        return False
 
     async def _verify_labs_activation(self, page) -> bool:
-        """Verify labs mode activated (look for labs indicators)."""
+        """Verify Labs mode activated via 2-tier selector cascade.
+
+        Tier 1: exact-text 'Labs' on a toolbar pill.
+        Tier 2: case-insensitive contains 'labs' (looser fallback).
+        Both miss → SELECTOR_DRIFT_DETECTED, return False (was: optimistic True).
+        """
+        # Tier 1: exact-text match on the toolbar mode pill
         try:
-            found = await page.evaluate("""() => {
-                const buttons = document.querySelectorAll('button, [role="button"], div[data-state]');
-                for (const b of buttons) {
-                    const text = (b.textContent || '').trim().toLowerCase();
+            primary_found = await page.evaluate("""() => {
+                const candidates = document.querySelectorAll('button, [role="button"], div[data-state]');
+                for (const el of candidates) {
+                    const text = (el.textContent || '').trim();
+                    if (text === 'Labs') return true;
+                }
+                return false;
+            }""")
+            if primary_found:
+                _log("activate_mode verify=OK mode=labs indicator=tier1_exact_match")
+                return True
+        except Exception as e:
+            _log(f"activate_mode verify=tier1_ERROR mode=labs exception={e!r}")
+
+        # Tier 2: case-insensitive contains
+        try:
+            fallback_found = await page.evaluate("""() => {
+                const candidates = document.querySelectorAll('button, [role="button"], div[data-state], span[class*="pill"], span[class*="badge"]');
+                for (const el of candidates) {
+                    const text = (el.textContent || '').trim().toLowerCase();
                     if (text.includes('labs')) return true;
                 }
                 return false;
             }""")
-            if found:
-                _log("Labs mode activated (found labs indicator)")
+            if fallback_found:
+                _log("activate_mode verify=OK mode=labs indicator=tier2_contains_match")
                 return True
-        except Exception:
-            pass
-        _log("WARNING: Could not verify labs activation, proceeding anyway")
-        return True  # Proceed optimistically
+        except Exception as e:
+            _log(f"activate_mode verify=tier2_ERROR mode=labs exception={e!r}")
+
+        _log("activate_mode verify=FAIL mode=labs indicator=SELECTOR_DRIFT_DETECTED")
+        return False
 
     async def _detect_dom_completion(self, page) -> dict:
         """Check Perplexity DOM for completion signals (research/labs modes)."""
@@ -2023,13 +2113,31 @@ class PerplexityCouncil:
                 )
                 await page.wait_for_timeout(2000)
 
-                _log(f"Activating {self.perplexity_mode} mode...")
-                if not await self.activate_mode(page):
-                    await self._save_artifact(page, "activate_failure")
-                    return {"error": f"Failed to activate {self.perplexity_mode} mode", "step": "activate"}
+                # Acquire the cross-process submit lock BEFORE activate_mode.
+                # activate_mode does page.click(textarea) on its first step,
+                # which is itself focus-sensitive — must be inside the lock
+                # to prevent the click+type race across concurrent Claude
+                # sessions. Released after submit_query returns (which
+                # internally waits for .prose to appear, proving the
+                # submission landed). wait_for_completion runs OUTSIDE the
+                # lock — fully parallel across sessions.
+                submit_lock = await self._acquire_submit_lock()
+                try:
+                    _log(f"Activating {self.perplexity_mode} mode...")
+                    if not await self.activate_mode(page):
+                        await self._save_artifact(page, "activate_failure")
+                        return {"error": f"Failed to activate {self.perplexity_mode} mode", "step": "activate"}
 
-                _log(f"Submitting query: {query[:80]}...")
-                await self.submit_query(page, query)
+                    _log(f"Submitting query: {query[:80]}...")
+                    await self.submit_query(page, query)
+                finally:
+                    try:
+                        submit_lock.release()
+                        _log("submit_lock released")
+                    except Exception as e:
+                        # Best-effort release; stale-mtime reclaim (180s) is
+                        # the fallback if this somehow fails to fire.
+                        _log(f"submit_lock release error={e!r}")
 
                 _log("Waiting for completion...")
                 completed = await self.wait_for_completion(page, self.timeout)
