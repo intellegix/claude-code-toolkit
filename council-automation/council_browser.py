@@ -274,8 +274,15 @@ PERPLEXITY_COMMIT_KEY = "Space"
 
 
 def _log(msg: str) -> None:
-    """Log to stderr (stdout reserved for JSON result)."""
-    print(f"  [browser] {msg}", file=sys.stderr)
+    """Log to stderr (stdout reserved for JSON result).
+
+    flush=True ensures real-time observability when stderr is redirected
+    to a file (Python's text-mode default block-buffers redirected stderr
+    even with python -u, which only unbuffers the binary layer below).
+    Real-time logs are essential for diagnosing the submit_lock + activate_mode
+    hang pattern under concurrent /research-perplexity load.
+    """
+    print(f"  [browser] {msg}", file=sys.stderr, flush=True)
 
 
 def _load_selectors() -> dict:

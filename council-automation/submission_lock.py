@@ -84,4 +84,14 @@ def get_submit_lock(timeout: float | None = None) -> FileLock:
     except OSError:
         pass
 
-    return FileLock(str(LOCK_PATH), timeout=timeout)
+    # thread_local=False is CRITICAL when acquire() runs in a different thread
+    # than release() — e.g., when caller wraps acquire in asyncio.to_thread() and
+    # releases from the main asyncio coroutine. filelock's default thread_local=True
+    # stores _lock_counter / is_locked state per-thread, so:
+    #   worker_thread.acquire()  → counter[worker]=1, OS lock held, fd open
+    #   main_thread.release()    → counter[main]=0 (always was), release short-
+    #                              circuits because is_locked=False, fd never
+    #                              closed, OS lock stays held until process exit
+    # With thread_local=False, the counter is shared across threads in the
+    # process and release correctly closes the fd / releases the OS lock.
+    return FileLock(str(LOCK_PATH), timeout=timeout, thread_local=False)
