@@ -5,3 +5,7 @@ openai>=1.0
 google-generativeai>=0.3.0
 playwright
 rebrowser-playwright>=1.52.0  # CDP leak patching for headless Cloudflare bypass (optional, toggle USE_REBROWSER)
+
+# extended_research_runner.py dependencies
+jsonschema>=4.0   # schema validation for forced-JSON Perplexity responses
+filelock>=3.13    # cross-process submission_lock (thread_local=False — see submission_lock.py)
