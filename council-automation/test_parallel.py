@@ -320,6 +320,145 @@ async def test_temp_dir_cleanup() -> bool:
     return passed
 
 
+def _worker_submit_lock(worker_id: int, hold_seconds: float, lock_path_str: str, results: dict) -> None:
+    """Worker process: acquire FileLock (thread_local=False, same config as
+    submission_lock.get_submit_lock()), hold, release. Record timestamps so
+    the parent can assert serialisation.
+    """
+    import time
+    from filelock import FileLock
+
+    t_start = time.time()
+    lock = FileLock(lock_path_str, timeout=30, thread_local=False)
+    try:
+        lock.acquire()
+        t_acquired = time.time()
+        time.sleep(hold_seconds)
+        t_before_release = time.time()
+        lock.release()
+        t_released = time.time()
+        results[worker_id] = {
+            "pid": os.getpid(),
+            "t_start": t_start,
+            "t_acquired": t_acquired,
+            "t_before_release": t_before_release,
+            "t_released": t_released,
+            "error": None,
+        }
+    except Exception as e:
+        results[worker_id] = {
+            "pid": os.getpid(),
+            "error": str(e),
+        }
+
+
+def test_submit_lock_serialises_concurrent_processes(hold_seconds: float = 1.5) -> bool:
+    """LOCK-SCOPE REGRESSION TEST: verify the submit_lock pattern serialises
+    correctly across processes.
+
+    Two workers each acquire+hold+release a FileLock at the SAME path with
+    thread_local=False (the production configuration in
+    `submission_lock.get_submit_lock()`). Validates that:
+    1. Both workers complete without error
+    2. The second worker's acquire timestamp is AFTER the first worker's
+       release timestamp (with 100ms tolerance for filelock poll interval)
+    3. Total elapsed time confirms sequential (not parallel) execution
+
+    Locks in the cross-process serialisation contract that
+    `submission_lock.py` depends on. If filelock changes its semantics or
+    a future refactor of submission_lock.py breaks the thread_local=False
+    invariant, this test fails fast.
+
+    Uses a test-specific lock path so it does NOT interfere with a real
+    /research-perplexity run in progress.
+    """
+    print(f"\n{'='*60}")
+    print(f"TEST 9: submit_lock cross-process serialisation")
+    print(f"{'='*60}")
+
+    test_lock_path = Path(tempfile.gettempdir()) / f"test_submit_lock_{os.getpid()}.lock"
+    # Ensure clean slate
+    try:
+        if test_lock_path.exists():
+            test_lock_path.unlink()
+    except OSError:
+        pass
+
+    manager = multiprocessing.Manager()
+    results = manager.dict()
+    workers = []
+    for i in range(2):
+        p = multiprocessing.Process(
+            target=_worker_submit_lock,
+            args=(i, hold_seconds, str(test_lock_path), results),
+        )
+        workers.append(p)
+
+    test_start = time.time()
+    for p in workers:
+        p.start()
+    # Generous join timeout: 4x hold + some slack for process startup.
+    for p in workers:
+        p.join(timeout=(hold_seconds * 4 + 5))
+    test_elapsed = time.time() - test_start
+
+    r0 = dict(results.get(0, {}))
+    r1 = dict(results.get(1, {}))
+
+    # Check for errors
+    errors = [(i, r.get("error")) for i, r in [(0, r0), (1, r1)] if r.get("error")]
+    if errors:
+        for i, e in errors:
+            print(f"  Worker {i}: ERROR — {e}")
+        print(f"  RESULT: FAIL (worker errors)")
+        # Cleanup
+        try:
+            test_lock_path.unlink()
+        except OSError:
+            pass
+        return False
+
+    # Determine who acquired first (by t_acquired timestamp).
+    if r0.get("t_acquired", float("inf")) <= r1.get("t_acquired", float("inf")):
+        first, second = r0, r1
+        first_id, second_id = 0, 1
+    else:
+        first, second = r1, r0
+        first_id, second_id = 1, 0
+
+    print(f"  Worker {first_id} (PID {first['pid']}): "
+          f"acquired t+{first['t_acquired']-test_start:.3f}s, "
+          f"released t+{first['t_released']-test_start:.3f}s "
+          f"(held {first['t_released']-first['t_acquired']:.3f}s)")
+    print(f"  Worker {second_id} (PID {second['pid']}): "
+          f"acquired t+{second['t_acquired']-test_start:.3f}s, "
+          f"released t+{second['t_released']-test_start:.3f}s "
+          f"(held {second['t_released']-second['t_acquired']:.3f}s)")
+    print(f"  Total elapsed: {test_elapsed:.2f}s "
+          f"(sequential ~{2*hold_seconds:.1f}s, parallel would be ~{hold_seconds:.1f}s)")
+
+    # Assertions:
+    both_completed = "t_released" in first and "t_released" in second
+    # Second's acquire is AFTER first's release (50ms poll-interval tolerance).
+    serialised = (second["t_acquired"] - first["t_released"]) >= -0.05
+    # Total time confirms sequential execution: should be ~2 * hold, not ~hold.
+    sequential_timing = test_elapsed >= (hold_seconds * 1.8)
+
+    print(f"\n  Both workers completed:                        {both_completed}")
+    print(f"  Second acquired AFTER first released:          {serialised}")
+    print(f"  Total elapsed confirms sequential execution:   {sequential_timing}")
+
+    passed = both_completed and serialised and sequential_timing
+    print(f"  RESULT: {'PASS' if passed else 'FAIL'}")
+
+    # Cleanup
+    try:
+        test_lock_path.unlink()
+    except OSError:
+        pass
+    return passed
+
+
 def test_concurrent_subprocess_isolation(n_workers: int = 2) -> bool:
     """LIVE integration test: spawn N `python council_query.py` subprocesses
     in parallel, assert distinct chrome.exe process trees with distinct
@@ -498,6 +637,11 @@ async def main():
     # Tests 6-7: need browser/filesystem
     results["temp_dir_cleanup"] = await test_temp_dir_cleanup()
     results["browser_launches"] = await test_browser_launches(4)
+
+    # Test 9: submit_lock cross-process serialisation regression test
+    # (no browser, no Perplexity — runs in ~4s, locks in the lock-scope
+    # contract that prevents two-Claude-session Chrome ProcessSingleton races).
+    results["submit_lock_serialisation"] = test_submit_lock_serialises_concurrent_processes(1.5)
 
     # Test 8: live integration (slow — opt-in only).
     # NOTE: spawns real `python council_query.py` subprocesses against the
