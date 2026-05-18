@@ -94,12 +94,17 @@ USE_REBROWSER = False
 
 # Headless by default — avoids the visible "Chromes fighting" UX during
 # concurrent /research-perplexity runs across multiple Claude sessions.
-# BROWSER_HEADLESS_FALLBACK = True keeps the Cloudflare safety net: if
-# a headless query gets a Cloudflare challenge, we auto-retry that query
-# in headful mode. So the user never sees a Chrome window for normal
-# queries; only Cloudflare-challenged queries briefly become visible.
+#
+# BROWSER_HEADLESS_FALLBACK was True (auto-relaunch headful on Cloudflare),
+# but its probe-then-relaunch flow runs INSIDE the submit_lock window AND
+# creates a new tempfile.mkdtemp per relaunch. That orphaned 7+ temp dirs
+# in a single test run and broke concurrency. Setting it False makes
+# headless a clean go/no-go: either it works, or the query returns a
+# clean error and we don't auto-launch another Chrome. If Cloudflare
+# becomes a chronic issue, the fix is a one-time `/cache-perplexity-
+# session` refresh, not an in-band fallback relaunch.
 BROWSER_HEADLESS = True
-BROWSER_HEADLESS_FALLBACK = True  # Safety net: headless → detect Cloudflare → retry headful
+BROWSER_HEADLESS_FALLBACK = False
 BROWSER_TIMEOUT = 180_000  # ms, total timeout for council query
 BROWSER_RESEARCH_TIMEOUT = 480_000  # ms, deep research can take up to 7 min
 BROWSER_LABS_TIMEOUT = 840_000  # ms, labs mode — 14 min (1 min buffer under 15 min MCP timeout)
