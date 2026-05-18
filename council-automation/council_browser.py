@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -645,6 +646,16 @@ class PerplexityCouncil:
         concurrently. Cookies injected via _load_session() after launch.
         Per-instance fingerprint diversification applied via instance_id.
         """
+        # Pre-launch jitter: prevents two concurrent Claude sessions from
+        # racing into chromium.launch_persistent_context within microseconds
+        # of each other. Chrome's global Local\ChromeProcessSingletonStartup!
+        # mutex serialises singleton-window creation; under zero-stagger
+        # concurrency, the FindRunningChromeWindow lookup can briefly see
+        # the other instance's not-yet-titled window as a match candidate.
+        # 0-500ms jitter eliminates the zero-stagger race. The submit_lock
+        # below (acquired by run() before self.start()) is the primary
+        # mechanism; this jitter is belt-and-suspenders defense.
+        await asyncio.sleep(random.uniform(0, 0.5))
         # Canonicalise the temp dir: resolve symlinks, fix case, strip trailing
         # separator. Defeats Chrome's FindRunningChromeWindow false-positive title
         # match on Windows (mixed-case drives, 8.3 short paths, trailing seps),
@@ -697,6 +708,8 @@ class PerplexityCouncil:
         Cookies injected via _load_session() after launch.
         Per-instance fingerprint diversification applied via instance_id.
         """
+        # Pre-launch jitter (see _start_non_persistent for full rationale).
+        await asyncio.sleep(random.uniform(0, 0.5))
         # Canonicalise the temp dir — same rationale as _start_non_persistent:
         # defeats Chrome's FindRunningChromeWindow false-positive title match.
         raw_cf_dir = tempfile.mkdtemp(prefix="council_cf_")
@@ -2086,6 +2099,28 @@ class PerplexityCouncil:
                 "step": "lock",
             }
 
+        # Acquire the cross-process submit lock BEFORE self.start() so
+        # chromium.launch_persistent_context calls are serialised across
+        # concurrent Claude Code sessions. Without this, two Chrome
+        # processes can start within microseconds of each other, race
+        # through Chrome's global Local\ChromeProcessSingletonStartup!
+        # mutex, and one suicides with exit code 21 (ProcessSingleton
+        # collision). Released right after submit_query completes
+        # (~10-15s) — wait_for_completion runs outside the lock so
+        # other sessions can submit while this one collects results.
+        # The defensive release in the outer finally below covers any
+        # exception path that exits before the explicit release.
+        submit_lock = None
+        submit_lock_released = False
+        try:
+            submit_lock = await self._acquire_submit_lock()
+        except Exception as lock_err:
+            self._semaphore.release()
+            return {
+                "error": f"submit_lock acquire failed: {lock_err!r}",
+                "step": "submit_lock",
+            }
+
         try:
             _log("Starting Playwright browser...")
             await self.start()
@@ -2120,31 +2155,31 @@ class PerplexityCouncil:
                 )
                 await page.wait_for_timeout(2000)
 
-                # Acquire the cross-process submit lock BEFORE activate_mode.
-                # activate_mode does page.click(textarea) on its first step,
-                # which is itself focus-sensitive — must be inside the lock
-                # to prevent the click+type race across concurrent Claude
-                # sessions. Released after submit_query returns (which
-                # internally waits for .prose to appear, proving the
-                # submission landed). wait_for_completion runs OUTSIDE the
-                # lock — fully parallel across sessions.
-                submit_lock = await self._acquire_submit_lock()
-                try:
-                    _log(f"Activating {self.perplexity_mode} mode...")
-                    if not await self.activate_mode(page):
-                        await self._save_artifact(page, "activate_failure")
-                        return {"error": f"Failed to activate {self.perplexity_mode} mode", "step": "activate"}
+                # submit_lock was acquired BEFORE self.start() (above) so
+                # Chrome launches ARE inside the lock — this prevents the
+                # ProcessSingleton race between concurrent Claude sessions
+                # that was causing "browsers close each other out".
+                # Release happens immediately after submit_query returns so
+                # wait_for_completion + extract_results run OUTSIDE the lock
+                # (fully parallel across sessions).
+                _log(f"Activating {self.perplexity_mode} mode...")
+                if not await self.activate_mode(page):
+                    await self._save_artifact(page, "activate_failure")
+                    return {"error": f"Failed to activate {self.perplexity_mode} mode", "step": "activate"}
 
-                    _log(f"Submitting query: {query[:80]}...")
-                    await self.submit_query(page, query)
-                finally:
-                    try:
-                        submit_lock.release()
-                        _log("submit_lock released")
-                    except Exception as e:
-                        # Best-effort release; stale-mtime reclaim (180s) is
-                        # the fallback if this somehow fails to fire.
-                        _log(f"submit_lock release error={e!r}")
+                _log(f"Submitting query: {query[:80]}...")
+                await self.submit_query(page, query)
+
+                # Release submit_lock NOW — submission landed (.prose
+                # appeared inside submit_query). Defensive release in the
+                # outer finally covers any exception path that bypasses
+                # this explicit release.
+                try:
+                    submit_lock.release()
+                    submit_lock_released = True
+                    _log("submit_lock released")
+                except Exception as e:
+                    _log(f"submit_lock release error={e!r}")
 
                 _log("Waiting for completion...")
                 completed = await self.wait_for_completion(page, self.timeout)
@@ -2182,6 +2217,17 @@ class PerplexityCouncil:
                 "execution_time_ms": int((time.time() - start_time) * 1000),
             }
         finally:
+            # Defensive submit_lock release. Only fires if the explicit
+            # release after submit_query didn't run (e.g., exception
+            # before submit_query completed). Double-release is harmless
+            # with thread_local=False — release() checks is_locked first
+            # and short-circuits if already released.
+            if submit_lock is not None and not submit_lock_released:
+                try:
+                    submit_lock.release()
+                    _log("submit_lock released (defensive)")
+                except Exception:
+                    pass
             self._semaphore.release()
 
     async def save_session(self) -> None:
