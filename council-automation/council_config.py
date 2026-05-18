@@ -92,9 +92,13 @@ DIRECT_TIMEOUT = 60  # seconds per direct provider call
 # Set USE_REBROWSER = True to re-test after rebrowser-patches updates.
 USE_REBROWSER = False
 
-# Headful by default — rebrowser-patches v1.52.0 does not yet bypass Cloudflare on Perplexity.
-# Set BROWSER_HEADLESS_FALLBACK = True to auto-retry headful if headless gets blocked.
-BROWSER_HEADLESS = False
+# Headless by default — avoids the visible "Chromes fighting" UX during
+# concurrent /research-perplexity runs across multiple Claude sessions.
+# BROWSER_HEADLESS_FALLBACK = True keeps the Cloudflare safety net: if
+# a headless query gets a Cloudflare challenge, we auto-retry that query
+# in headful mode. So the user never sees a Chrome window for normal
+# queries; only Cloudflare-challenged queries briefly become visible.
+BROWSER_HEADLESS = True
 BROWSER_HEADLESS_FALLBACK = True  # Safety net: headless → detect Cloudflare → retry headful
 BROWSER_TIMEOUT = 180_000  # ms, total timeout for council query
 BROWSER_RESEARCH_TIMEOUT = 480_000  # ms, deep research can take up to 7 min
