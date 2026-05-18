@@ -490,12 +490,13 @@ def test_concurrent_subprocess_isolation(n_workers: int = 2) -> bool:
         print(f"  SKIP: {council_query_path} not found")
         return True
 
-    # Distinct short queries so cross-contamination is detectable.
+    # Research-mode-friendly queries (factual, well-defined). Avoid trivial
+    # math like "what is 2+2" which makes Perplexity research stall.
     queries = [
-        "What is 2 plus 2? One number only.",
-        "What color is the sky on a clear day? One word only.",
-        "What is the capital of France? One word only.",
-        "What is the speed of light in km/s? One number only.",
+        "What is the current stable Node.js LTS major version as of May 2026? Give just the major version number and codename.",
+        "What is the current stable Python version as of May 2026? Give just the version number, e.g. 3.13.0.",
+        "What is the latest stable Rust version as of May 2026? Give just the version number.",
+        "What is the latest stable Go version as of May 2026? Give just the version number.",
     ][:n_workers]
 
     # Snapshot existing council_np_ temp dirs so we can detect leftovers.
@@ -523,33 +524,54 @@ def test_concurrent_subprocess_isolation(n_workers: int = 2) -> bool:
         )
         procs.append((i, q, p))
 
-    # Mid-flight Chrome check: wait briefly for Chrome to spawn, then poll
-    # psutil for chrome.exe processes with --user-data-dir=council_np_*.
-    time.sleep(15)
-    chrome_procs = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            if proc.info["name"] not in ("chrome.exe", "chrome"):
+    # Polling loop: accumulate ALL distinct council_np_ user_data_dirs seen
+    # over the lifetime of the run. Under the new lock-wraps-Chrome-launch
+    # behavior (commit 0a452da), only ONE Chrome's user_data_dir is visible
+    # at any given moment because subprocess B is parked on the submit_lock
+    # while subprocess A is in the critical section. Over time, both
+    # subprocesses should have launched their Chromes (sequentially), so
+    # the accumulated set grows to N distinct dirs.
+    all_seen_dirs = set()
+    max_concurrent_dirs_seen = 0
+    poll_interval = 5
+    max_poll_seconds = 360  # 6 min cap for the full N=2 sequential run
+    poll_elapsed = 0
+    print(f"  Polling chrome.exe procs (poll every {poll_interval}s, max {max_poll_seconds}s):")
+    while poll_elapsed < max_poll_seconds:
+        # Check chrome.exe procs with council_np_ user_data_dir.
+        current_dirs = set()
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if proc.info["name"] not in ("chrome.exe", "chrome"):
+                    continue
+                cmdline = proc.info["cmdline"] or []
+                user_data_arg = next(
+                    (a for a in cmdline
+                     if a.startswith("--user-data-dir=") and "council_np_" in a),
+                    None,
+                )
+                if user_data_arg:
+                    current_dirs.add(user_data_arg.split("=", 1)[1])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-            cmdline = proc.info["cmdline"] or []
-            user_data_arg = next(
-                (a for a in cmdline
-                 if a.startswith("--user-data-dir=") and "council_np_" in a),
-                None,
-            )
-            if user_data_arg:
-                chrome_procs.append({
-                    "pid": proc.info["pid"],
-                    "user_data_dir": user_data_arg.split("=", 1)[1],
-                })
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
+        all_seen_dirs.update(current_dirs)
+        max_concurrent_dirs_seen = max(max_concurrent_dirs_seen, len(current_dirs))
+        if current_dirs:
+            print(f"    t+{poll_elapsed:3d}s: {len(current_dirs)} concurrent dir(s), {len(all_seen_dirs)} accumulated")
+        # Check if all subprocesses have exited.
+        if all(p.poll() is not None for _, _, p in procs):
+            print(f"    t+{poll_elapsed:3d}s: all subprocesses exited")
+            break
+        time.sleep(poll_interval)
+        poll_elapsed += poll_interval
 
-    distinct_dirs = sorted(set(p["user_data_dir"] for p in chrome_procs))
-    print(f"  Mid-flight: {len(chrome_procs)} chrome.exe parents w/ council_np_ profile, "
-          f"{len(distinct_dirs)} distinct dirs")
+    distinct_dirs = sorted(all_seen_dirs)
+    print(f"  Accumulated distinct user_data_dirs over time: {len(distinct_dirs)}")
     for d in distinct_dirs:
         print(f"    {d}")
+    print(f"  Max CONCURRENT user_data_dirs seen at any single poll: {max_concurrent_dirs_seen}")
+    print(f"    (under serial-launch lock, this should equal 1; "
+          f"if >1, two Chromes coexisted — lock may be regressed)")
 
     # Canonicalisation check: realpath of each path should equal itself
     # (idempotent under realpath + rstrip(sep)).
@@ -558,16 +580,16 @@ def test_concurrent_subprocess_isolation(n_workers: int = 2) -> bool:
     ) if distinct_dirs else False
     print(f"  All dirs are canonical (realpath idempotent): {canonical_ok}")
 
-    # Wait for all subprocesses to complete.
+    # Collect final results from each subprocess (they've all exited by now).
     syntheses = []
     rcs = []
     for i, q, p in procs:
         try:
-            stdout, stderr = p.communicate(timeout=300)
+            stdout, stderr = p.communicate(timeout=30)
         except subprocess.TimeoutExpired:
             p.kill()
             stdout, stderr = p.communicate()
-            print(f"  Subprocess {i}: TIMEOUT after 300s")
+            print(f"  Subprocess {i}: still alive after polling loop, killed")
             stdout = stdout or ""
             stderr = stderr or ""
         rc = p.returncode
@@ -588,24 +610,33 @@ def test_concurrent_subprocess_isolation(n_workers: int = 2) -> bool:
         sample = sorted(new_alive_dirs)[:5]
         print(f"  WARN: {len(new_alive_dirs)} council_np_* dirs left behind: {sample}")
 
-    # Final assertions
-    n_chrome_parents_ok = len(chrome_procs) >= n_workers
-    n_distinct_dirs_ok = len(distinct_dirs) >= n_workers
+    # Final assertions — updated for the new serial-launch lock semantics
+    # (commit 0a452da). The submit_lock wraps Chrome launch, so the OLD
+    # mid-flight assertion `chrome.exe parents >= n_workers SIMULTANEOUSLY`
+    # is no longer valid — by design, only one Chrome at a time has the
+    # lock during launch. Over the FULL run lifetime, both Chromes will
+    # have launched (sequentially), so we check the ACCUMULATED set.
+    n_distinct_dirs_seen = len(distinct_dirs)
+    accumulated_dirs_ok = n_distinct_dirs_seen >= n_workers
     all_rcs_zero = all(rc == 0 for rc in rcs)
     syntheses_nonempty = all(len(s) > 50 for s in syntheses)
     syntheses_distinct = len(set(syntheses)) == len(syntheses)
+    # Sanity: max_concurrent_dirs_seen should NEVER exceed n_workers.
+    # If it does, there's a phantom Chrome (server.js retry-on-empty
+    # cascade or some other respawn).
+    no_phantom_chromes = max_concurrent_dirs_seen <= n_workers
 
-    print(f"\n  chrome.exe parents observed mid-flight >= {n_workers}: {n_chrome_parents_ok}")
-    print(f"  distinct canonical user_data_dirs >= {n_workers}: {n_distinct_dirs_ok}")
-    print(f"  all dirs are canonical (realpath idempotent):  {canonical_ok}")
-    print(f"  all subprocesses returned rc=0:                {all_rcs_zero}")
-    print(f"  syntheses non-empty (len > 50):                {syntheses_nonempty}")
-    print(f"  syntheses distinct (no state bleed):           {syntheses_distinct}")
-    print(f"  temp dirs cleaned up:                          {cleanup_ok}")
+    print(f"\n  accumulated distinct user_data_dirs >= {n_workers}:  {accumulated_dirs_ok} (saw {n_distinct_dirs_seen})")
+    print(f"  max CONCURRENT user_data_dirs <= {n_workers} (no phantoms): {no_phantom_chromes} (max saw {max_concurrent_dirs_seen})")
+    print(f"  all dirs are canonical (realpath idempotent):     {canonical_ok}")
+    print(f"  all subprocesses returned rc=0:                   {all_rcs_zero}")
+    print(f"  syntheses non-empty (len > 50):                   {syntheses_nonempty}")
+    print(f"  syntheses distinct (no state bleed):              {syntheses_distinct}")
+    print(f"  temp dirs cleaned up:                             {cleanup_ok}")
 
     passed = all([
-        n_chrome_parents_ok,
-        n_distinct_dirs_ok,
+        accumulated_dirs_ok,
+        no_phantom_chromes,
         canonical_ok,
         all_rcs_zero,
         syntheses_nonempty,
